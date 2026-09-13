@@ -1,0 +1,37 @@
+[Unit]
+Description=FoldDeck host — streams this screen to the Fold
+Documentation=file:%h/folddeck/README.md
+# Deliberately no After=graphical-session.target: on Cinnamon under lightdm that
+# target is never reached, so a unit ordered against it would simply never run.
+# The autostart entry starts this from inside the session instead, which is also
+# where DISPLAY and XAUTHORITY come from.
+
+# Rate limiting lives in [Unit], not [Service]. systemd ignores it in [Service]
+# with only a warning, so the limiter silently does nothing there.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=%h/folddeck/host/stream.py --bind 0.0.0.0 --port 5000
+WorkingDirectory=%h/folddeck/host
+
+# Without this, Python block-buffers stdout when it isn't a tty and journalctl
+# shows nothing until the buffer fills or the process dies.
+Environment=PYTHONUNBUFFERED=1
+
+Restart=always
+RestartSec=3
+
+# The service needs /dev/uinput and the X socket, so it cannot be sandboxed hard.
+# These are the restrictions that still hold.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+
+[Install]
+# Intentionally NOT WantedBy=default.target. That would start it at user-session
+# boot, before X exists, where it would fail and restart forever. The autostart
+# .desktop is what launches it, once the graphical session is actually up.

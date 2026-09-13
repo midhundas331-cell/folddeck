@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive icon for API 26+. The background layer is transparent, as asked: the
+  launcher's mask then shows through to the wallpaper rather than stamping the
+  mark onto a coloured tile. The foreground is inset to the 72/108dp safe zone so
+  One UI's squircle mask cannot clip it.
+
+  Pre-26 launchers fall back to res/mipmap-*/ic_launcher.png, which is the same
+  art at full bleed.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@android:color/transparent" />
+    <foreground android:drawable="@mipmap/ic_launcher_fg" />
+</adaptive-icon>

@@ -1,0 +1,8 @@
+# Allow the `input` group to open /dev/uinput, so FoldDeck can create virtual
+# keyboard/pointer devices without running as root.
+#
+#   sudo cp 99-folddeck.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#   sudo usermod -aG input $USER      # then log out and back in
+#   sudo modprobe uinput              # and add `uinput` to /etc/modules-load.d/
+KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"

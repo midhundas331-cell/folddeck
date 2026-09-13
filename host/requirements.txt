@@ -1,0 +1,6 @@
+cryptography>=42.0
+# System packages:
+#   Wayland (Hyprland/wlroots): wf-recorder
+#   X11:                        ffmpeg
+#   Hardware encode:            a working VA-API driver (intel-media-driver / mesa)
+#   --clock only:               python-gobject + GTK 3
