@@ -71,6 +71,7 @@ _ABS_SETUP = struct.Struct("@H2x6i")
 
 KEY_MAX = 255  # everything a PC keyboard emits lives well below this
 ABS_RANGE = 32767  # absolute axes are reported in 0..ABS_RANGE
+U16_MAX = 65535    # ...and the phone sends them in 0..U16_MAX
 
 
 class VirtualKeyboard:
@@ -203,10 +204,19 @@ class VirtualPointer:
         self._emit(EV_SYN, SYN_REPORT, 0)
 
     def move(self, x_permille: int, y_permille: int) -> None:
-        x = max(0, min(1000, x_permille)) * ABS_RANGE // 1000
-        y = max(0, min(1000, y_permille)) * ABS_RANGE // 1000
-        self._emit(EV_ABS, ABS_X, x)
-        self._emit(EV_ABS, ABS_Y, y)
+        """Absolute position in permille. Kept for clients older than MSG_PTR_ABS16."""
+        self.move_abs(x_permille * U16_MAX // 1000, y_permille * U16_MAX // 1000)
+
+    def move_abs(self, x: int, y: int) -> None:
+        """Absolute position, each axis 0..65535.
+
+        Permille was fine for a finger and is not for a mouse: a thousand steps
+        is 1.9px per step across a 1920px desktop, so the cursor moves in
+        visible jumps, and a slow movement at a low pointer speed rounds down to
+        no movement at all.
+        """
+        self._emit(EV_ABS, ABS_X, max(0, min(U16_MAX, x)) * ABS_RANGE // U16_MAX)
+        self._emit(EV_ABS, ABS_Y, max(0, min(U16_MAX, y)) * ABS_RANGE // U16_MAX)
         self._syn()
 
     def button(self, btn: int, down: bool) -> None:

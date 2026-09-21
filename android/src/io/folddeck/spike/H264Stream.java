@@ -177,11 +177,19 @@ final class H264Stream implements Runnable {
                 (byte) (down ? 1 : 0)});
     }
 
-    /** MSG_PTR_ABS: absolute position in permille of the host screen. */
-    void sendPointer(int xPermille, int yPermille) {
-        offer(new byte[]{2,
-                (byte) ((xPermille >> 8) & 0xFF), (byte) (xPermille & 0xFF),
-                (byte) ((yPermille >> 8) & 0xFF), (byte) (yPermille & 0xFF)});
+    /**
+     * MSG_PTR_ABS16: absolute position on the host screen, each axis 0..65535.
+     *
+     * Not the older permille MSG_PTR_ABS (type 2). A thousand steps is 1.9px per
+     * step across a 1920px desktop -- invisible under a finger, visibly steppy
+     * under a mouse, and at a low pointer speed a small movement rounds to no
+     * movement at all. The host still parses type 2, so an older APK keeps
+     * working; this one needs a host new enough to know type 5.
+     */
+    void sendPointer(int x, int y) {
+        offer(new byte[]{5,
+                (byte) ((x >> 8) & 0xFF), (byte) (x & 0xFF),
+                (byte) ((y >> 8) & 0xFF), (byte) (y & 0xFF)});
     }
 
     /** MSG_BUTTON: 1 = left, 2 = right, 3 = middle. */

@@ -6,6 +6,7 @@ import android.content.res.Configuration;
 import android.os.Bundle;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
@@ -77,6 +78,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private LockOverlay lockOverlay;
 
     private boolean locked = true;
+    /** True once the user has chorded left+right to hand the mouse back to the
+     *  phone. Sticky, because the chord is a toggle: re-grabbing the moment the
+     *  desktop is on screen again would make it impossible to ever keep. */
+    private boolean mouseHandedBack = false;
     /** True from pressing Connect until Disconnect: survives locking, so
      *  unlocking puts you back on the desktop you were using. */
     private boolean wantStream = false;
@@ -325,6 +330,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 if (stream != null) stream.sendScroll(dv, dh);
             }
         });
+        // Captured pointer events go to the focused view, so the pad has to be
+        // able to hold focus for a Bluetooth mouse to reach it at all.
+        pointerPad.setFocusable(true);
+        pointerPad.setFocusableInTouchMode(true);
+        pointerPad.setMouseSensitivity(Prefs.mouseSens(prefs));
+        pointerPad.setHandBackListener(() -> {
+            mouseHandedBack = true;
+            updatePointerCapture();
+        });
 
         // Video pane: the surface, the pointer overlay, then the HUD on top.
         videoPane = new FrameLayout(this);
@@ -527,6 +541,68 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     // ------------------------------------------------------------------ //
+    // Mouse capture
+    //
+    // A Bluetooth mouse paired to the phone should drive the laptop, not the
+    // phone -- so FoldDeck takes the mouse whenever the desktop is what you are
+    // looking at, and gives it back everywhere else. Pointer capture hides the
+    // phone's own cursor, which is why it must be released before any screen
+    // with something to tap on it.
+    // ------------------------------------------------------------------ //
+    private void updatePointerCapture() {
+        if (pointerPad == null) return;
+        boolean want = screen == SCREEN_DECK && !locked && !mouseHandedBack && hasWindowFocus();
+        if (want == pointerPad.hasPointerCapture()) return;
+        if (want) {
+            pointerPad.requestFocus();
+            pointerPad.requestPointerCapture();
+        } else {
+            pointerPad.releasePointerCapture();
+        }
+    }
+
+    /**
+     * Capture can only be requested while the window has focus, so this is the
+     * hook that actually grabs the mouse on the way back from the lock screen,
+     * a notification shade or another app.
+     */
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) hideSystemBars();
+        updatePointerCapture();
+    }
+
+    // Both dispatch paths, because an uncaptured mouse reports its buttons on
+    // whichever of the two the device happens to use: button state rides
+    // ACTION_DOWN on the touch path and ACTION_BUTTON_PRESS on the generic one.
+    @Override
+    public boolean dispatchGenericMotionEvent(MotionEvent ev) {
+        return retakeMouse(ev) || super.dispatchGenericMotionEvent(ev);
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        return retakeMouse(ev) || super.dispatchTouchEvent(ev);
+    }
+
+    /**
+     * Left and right together takes the mouse back, mirroring the chord that
+     * gave it up.
+     *
+     * Consuming the event matters: without it the same press that re-captures
+     * also lands as a click on whatever is under the phone's cursor.
+     */
+    private boolean retakeMouse(MotionEvent ev) {
+        if (!mouseHandedBack || locked || screen != SCREEN_DECK) return false;
+        int both = MotionEvent.BUTTON_PRIMARY | MotionEvent.BUTTON_SECONDARY;
+        if ((ev.getButtonState() & both) != both) return false;
+        mouseHandedBack = false;
+        updatePointerCapture();
+        return true;
+    }
+
+    // ------------------------------------------------------------------ //
     // Screens
     // ------------------------------------------------------------------ //
     private void showScreen(int which) {
@@ -545,12 +621,16 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             shortcutsView.setVisibility(which == SCREEN_SHORTCUTS ? View.VISIBLE : View.GONE);
         }
         hideSystemBars();
+        updatePointerCapture();
     }
 
     private void showSettings() {
         if (settingsView == null) {
             settingsView = new SettingsView(this, prefs, lock, new SettingsView.Listener() {
                 @Override public void onEditAddress()   { showAddressScreen(); }
+                @Override public void onMouseSensitivity(float sens) {
+                    if (pointerPad != null) pointerPad.setMouseSensitivity(sens);
+                }
                 @Override public void onChangePin()     { changePin(); }
                 @Override public void onForgetHostCertificate() { forgetHostCertificate(); }
                 @Override public void onLaptopLayoutChanged()   { applyPosture(); }
@@ -885,6 +965,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         dropStream();
         lockOverlay.setVisibility(View.VISIBLE);
         lockOverlay.onShown();
+        updatePointerCapture();
     }
 
     // ------------------------------------------------------------------ //

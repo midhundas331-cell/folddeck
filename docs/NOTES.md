@@ -244,9 +244,18 @@ connection rather than injecting random scancodes into the desktop):
 | type | name | payload |
 |---|---|---|
 | 1 | KEY | `u16 code`, `u8 down` |
-| 2 | PTR_ABS | `u16 x‰`, `u16 y‰` |
+| 2 | PTR_ABS | `u16 x‰`, `u16 y‰` — legacy, still parsed |
 | 3 | BUTTON | `u8 button` (1=L 2=R 3=M), `u8 down` |
 | 4 | SCROLL | `i16 dv`, `i16 dh` |
+| 5 | PTR_ABS16 | `u16 x`, `u16 y`, each 0..65535 |
+
+**Type 5 replaced type 2 when the mouse landed (2026-09-20).** Permille is 1.9px
+per step across a 1920px desktop — invisible under a finger, visibly steppy
+under a mouse, and below 1.0x pointer speed a small movement rounds to no
+movement at all. The host still parses type 2, so an **older APK keeps working
+against a newer host**; the reverse does not — a current APK against a host
+predating this gets `! bad input message type 5, closing` in the journal and the
+phone disconnects the moment you move the pointer. Update the host first.
 
 Input rides the reliable stream deliberately: a dropped KEY_UP leaves a modifier
 stuck down on the laptop, which is worth far more than saving a millisecond.
@@ -309,6 +318,52 @@ Two modes, toggled by the chip in the top-right of the video pane:
 Gestures: tap = left click, long press = right click, double-tap-and-hold = drag,
 two-finger drag = scroll.
 
+### Bluetooth mouse (2026-09-20)
+
+A mouse paired to the *phone* drives the *laptop*. The mechanism is Android
+**pointer capture** (`View.requestPointerCapture()`, API 26): it hides the
+phone's own cursor and delivers raw relative deltas to
+`PointerPad.onCapturedPointerEvent`, which is the difference between a mouse for
+the phone and a mouse for the laptop.
+
+- **Captured only on the deck screen**, and only unlocked and window-focused
+  (`MainActivity.updatePointerCapture`). Everywhere else it is released, because
+  capture hides the cursor and Settings has things to tap. Consequence the other
+  way: **Android owns the pointer on the app's own screens, and its speed with
+  it** — no app can change that, it lives in Android Settings → Accessibility.
+- **Captured events go to the focused view**, so `pointerPad` is made focusable
+  and takes focus before the request. Without that, capture succeeds and no
+  event ever arrives.
+- **Left + right together hands the mouse back** to the phone, and the same
+  chord takes it back. `mouseHandedBack` is sticky on purpose — the chord is a
+  toggle, and re-grabbing whenever the desktop reappears makes it impossible to
+  keep. The re-take is read off `getButtonState()` in **both**
+  `dispatchGenericMotionEvent` and `dispatchTouchEvent`, since an uncaptured
+  mouse reports buttons on whichever path the device uses, and the event is
+  consumed so the press does not also click something.
+- **One stray click per hand-back.** The first of the two buttons has already
+  gone down on the laptop and must be released or it stays down forever. Holding
+  the press back until the chord window closed would remove it, at the cost of
+  that delay on every drag — the wrong trade.
+- **The cursor cannot leave the desktop image, at any posture.** It is stored as
+  a *fraction of the host screen* (`PointerPad.cursorX/Y`), never in phone
+  pixels, so folding or rotating relays the video out underneath a cursor that
+  is still on the same part of the desktop. Clamping happens in `step()`, the
+  one place all three inputs — touch, nub, mouse — route through.
+- **Float, not permille.** A mouse delta smaller than one step must accumulate
+  rather than truncate, which is what a low pointer-speed setting is made of.
+  This fixed the same latent truncation in the TrackPoint nub.
+- **We draw the cursor** (`PointerPad.onDraw`), because capture hides the system
+  one. Accent fill on a background-coloured outline, both from the streamed
+  Omarchy palette, so it re-themes with everything else.
+
+Pointer speed is Settings → Mouse, `Prefs.MOUSE_SENS`, 0.25x–3.0x, where 1.0x
+tracks the desktop image one-to-one.
+
+Checks: `android/test/MouseCheck.java` (travel, clamp, sub-pixel accumulation,
+the chord state machine) and `host/test_pointer.py` (the wire format, including
+a fragmented message and an old permille client).
+
 The video is letterboxed to the stream's real aspect ratio, which the decoder
 reports via `INFO_OUTPUT_FORMAT_CHANGED` rather than being hardcoded. Without
 that the SurfaceView stretches the buffer to the pane, which distorts the desktop
@@ -328,6 +383,22 @@ that the SurfaceView stretches the buffer to the pane, which distorts the deskto
 Encoder headroom is measured against a *synthetic moving source*, not the live
 desktop. Measuring an idle desktop mostly measures how still your screen is and
 reports a flattering number that collapses the moment you drag a window.
+
+## Versions
+
+`android/AndroidManifest.xml` is the only place a version is written —
+`versionName` for people, `versionCode` for Android (it refuses a downgrade, so
+it must go up on every build you intend to install). Settings → About reads both
+back off the PackageManager rather than repeating them, so what it shows is what
+is actually installed.
+
+| version | code | what landed |
+|---|---|---|
+| 0.1-spike | 1 | everything up to the Omarchy theme and shortcut deck |
+| 0.2 | 2 | Bluetooth mouse: pointer capture, themed cursor, `MSG_PTR_ABS16` |
+
+**0.2 needs a host from 2026-09-20 or later** — see the wire-format table under
+Input. Bump `versionCode` before building anything you plan to sideload.
 
 ## Run it
 

@@ -42,6 +42,12 @@ class GuideView extends Panel {
         body.addView(tip(c, "Two fingers", "Scroll, vertically or sideways"));
         body.addView(tip(c, "Red square", "The TrackPoint, between G, H and B. Push it "
                 + "to move the pointer without lifting your hands off the keys."));
+        body.addView(tip(c, "Bluetooth mouse", "Pair one with the phone and it drives "
+                + "the laptop on its own, with the cursor locked inside the desktop "
+                + "image. Pointer speed is in Settings."));
+        body.addView(tip(c, "Left + right together", "Hands the mouse back to the "
+                + "phone, so you can use the app with it. The same chord takes it "
+                + "back to the laptop."));
         body.addView(tip(c, "DIRECT / TRACKPAD", "The first chip on the shortcut "
                 + "bar. DIRECT puts the pointer where you touch; TRACKPAD moves it "
                 + "relative to where it already is, like a laptop trackpad."));

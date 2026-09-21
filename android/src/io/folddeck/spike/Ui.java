@@ -299,6 +299,62 @@ final class Ui {
         return v;
     }
 
+    /**
+     * A square-knobbed slider over a 1px track, matching {@link #toggle}.
+     *
+     * Hand-drawn rather than a themed SeekBar for the same reason the toggle is:
+     * SeekBar's knob is a round drawable inside a ripple halo, and the work to
+     * beat that into square corners is more than the work to draw a line and a
+     * rectangle.
+     */
+    static View slider(Context c, float value, float min, float max,
+                       java.util.function.Consumer<Float> onChange) {
+        View v = new View(c) {
+            final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            float frac = (value - min) / (max - min);
+
+            @Override
+            public boolean onTouchEvent(android.view.MotionEvent e) {
+                switch (e.getActionMasked()) {
+                    case android.view.MotionEvent.ACTION_DOWN:
+                    case android.view.MotionEvent.ACTION_MOVE:
+                    case android.view.MotionEvent.ACTION_UP:
+                        // The knob has width, so the usable travel is inset by
+                        // half of it at each end; without that the value can
+                        // never quite reach min or max.
+                        float knob = getHeight() * 0.55f;
+                        float span = Math.max(getWidth() - knob, 1);
+                        frac = Math.max(0f, Math.min(1f, (e.getX() - knob / 2f) / span));
+                        invalidate();
+                        onChange.accept(min + frac * (max - min));
+                        // Claim the gesture or the scrolling settings list
+                        // steals it the moment the finger drifts vertically.
+                        getParent().requestDisallowInterceptTouchEvent(
+                                e.getActionMasked() != android.view.MotionEvent.ACTION_UP);
+                        return true;
+                    default:
+                        return super.onTouchEvent(e);
+                }
+            }
+
+            @Override
+            protected void onDraw(Canvas canvas) {
+                float w = getWidth(), h = getHeight();
+                float knob = h * 0.55f, span = Math.max(w - knob, 1);
+                float x = knob / 2f + frac * span, mid = h / 2f;
+
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(LINE);
+                canvas.drawRect(0, mid - 0.5f, w, mid + 0.5f, p);
+                p.setColor(ACCENT);
+                canvas.drawRect(0, mid - 0.5f, x, mid + 0.5f, p);
+                canvas.drawRect(x - knob / 2f, mid - h / 2f, x + knob / 2f, mid + h / 2f, p);
+            }
+        };
+        v.setLayoutParams(new LinearLayout.LayoutParams(dp(c, 112), dp(c, 24)));
+        return v;
+    }
+
     /** A single-line text field in Omarchy's input chrome. */
     static android.widget.EditText input(Context c, String text, String hint, int inputType) {
         android.widget.EditText e = new android.widget.EditText(c);

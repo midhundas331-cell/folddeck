@@ -398,11 +398,16 @@ def handshake(raw: socket.socket, addr, tls, allow_new: bool):
 _reject_count = 0
 _reject_token = ""
 
-MSG_KEY, MSG_PTR_ABS, MSG_BUTTON, MSG_SCROLL = 1, 2, 3, 4
+MSG_KEY, MSG_PTR_ABS, MSG_BUTTON, MSG_SCROLL, MSG_PTR_ABS16 = 1, 2, 3, 4, 5
 
 # type -> payload length. Every message is fixed-size for its type, so no length
 # field is needed; an unknown type means the stream has desynced.
-_PAYLOAD_LEN = {MSG_KEY: 3, MSG_PTR_ABS: 4, MSG_BUTTON: 2, MSG_SCROLL: 4}
+#
+# MSG_PTR_ABS (permille) is still parsed so an older APK keeps working, but
+# every current client sends MSG_PTR_ABS16 instead: permille is 1.9px per step
+# across a 1920px desktop, which a finger never noticed and a mouse does.
+_PAYLOAD_LEN = {MSG_KEY: 3, MSG_PTR_ABS: 4, MSG_BUTTON: 2, MSG_SCROLL: 4,
+                MSG_PTR_ABS16: 4}
 
 
 def input_reader(conn: socket.socket, kbd, ptr, stop: threading.Event,
@@ -458,6 +463,9 @@ def input_reader(conn: socket.socket, kbd, ptr, stop: threading.Event,
                 elif typ == MSG_PTR_ABS and ptr is not None:
                     x, y = struct.unpack(">HH", payload)
                     ptr.move(x, y)
+                elif typ == MSG_PTR_ABS16 and ptr is not None:
+                    x, y = struct.unpack(">HH", payload)
+                    ptr.move_abs(x, y)
                 elif typ == MSG_BUTTON and ptr is not None:
                     btn, down = struct.unpack(">BB", payload)
                     ptr.button(btn, down == 1)

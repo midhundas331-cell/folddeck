@@ -46,6 +46,18 @@ final class Prefs {
     static final String SHORTCUTS = "shortcuts";
 
     /**
+     * Pointer speed for a captured Bluetooth mouse, as a multiplier on the raw
+     * delta. 1.0 tracks the video one-to-one: moving the mouse the width of the
+     * desktop image moves the cursor the width of the desktop.
+     *
+     * This is the mouse once FoldDeck has it. On the app's own screens Android
+     * owns the pointer and its speed, which no app can change -- that one lives
+     * in Android Settings under Accessibility.
+     */
+    static final String MOUSE_SENS = "mouse_sens";
+    static final float MOUSE_SENS_MIN = 0.25f, MOUSE_SENS_MAX = 3f;
+
+    /**
      * Defaults are deliberate:
      *
      * AUTO_CONNECT off — the connect button is the thing that makes the app
@@ -68,6 +80,10 @@ final class Prefs {
 
     static boolean showHud(SharedPreferences p) {
         return p.getBoolean(SHOW_HUD, false);
+    }
+
+    static float mouseSens(SharedPreferences p) {
+        return p.getFloat(MOUSE_SENS, 1f);
     }
 
     static void putBool(SharedPreferences p, String key, boolean value) {
