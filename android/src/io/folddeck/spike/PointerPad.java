@@ -88,6 +88,8 @@ class PointerPad extends View {
     // drawn here: the laptop's own pointer is in the stream.
     private float mouseSens = 1f;
     private int held;
+    /** Scroll not yet sent, in fractions of a wheel notch. */
+    private float wheelV, wheelH;
     private Runnable onHandBack;
 
     private final Runnable longPress = new Runnable() {
@@ -378,8 +380,17 @@ class PointerPad extends View {
                 // from the user and REL_WHEEL positive is up, likewise HSCROLL
                 // and REL_HWHEEL to the right. The touch path inverts its
                 // horizontal axis instead, because dragging is not a wheel.
-                int dv = Math.round(e.getAxisValue(MotionEvent.AXIS_VSCROLL));
-                int dh = Math.round(e.getAxisValue(MotionEvent.AXIS_HSCROLL));
+                //
+                // A wheel reports whole notches; a touchpad's two-finger scroll
+                // reports fractions of one (0.004-0.12 each on the Cube), which
+                // rounded one at a time to nothing. Carry the remainder instead.
+                // ponytail: still one notch per step on the laptop; smooth would
+                // need REL_WHEEL_HI_RES units on the wire.
+                wheelV += e.getAxisValue(MotionEvent.AXIS_VSCROLL);
+                wheelH += e.getAxisValue(MotionEvent.AXIS_HSCROLL);
+                int dv = (int) wheelV, dh = (int) wheelH;
+                wheelV -= dv;
+                wheelH -= dh;
                 if ((dv != 0 || dh != 0) && listener != null) listener.onScroll(dv, dh);
                 return true;
             }

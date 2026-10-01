@@ -406,7 +406,11 @@ on-screen keyboard gets out of the way.
 
 Verified 2026-10-01 on the Fold 7 with a Cube Pocket Keyboard (BT, built-in
 trackpad): layout swap, letters/modifiers, Super, trackpad move + tap-click.
-Not yet seen in a log: two-finger scroll and two-finger right-click.
+Two-finger tap arrives as `BUTTON_SECONDARY` and works unchanged. Two-finger
+scroll arrives as `ACTION_SCROLL` with *fractional* `AXIS_VSCROLL` (0.004-0.12
+per event); the old per-event `Math.round` turned every one into 0. The
+remainder is now carried between events and whole notches sent. Smooth scroll
+would need `REL_WHEEL_HI_RES` units on the wire (a host change). Both verified.
 
 ## Measured on this laptop (2026-07-28)
 
