@@ -38,6 +38,7 @@ final class Prefs {
     static final String AUTO_CONNECT = "auto_connect";
     static final String LAPTOP_LAYOUT = "laptop_layout";
     static final String SHOW_HUD = "show_hud";
+    static final String HIDE_KEYBOARD = "hide_keyboard";
 
     /** The laptop's Omarchy palette as last sent down the stream, "key=#rrggbb" lines. */
     static final String THEME = "theme";
@@ -80,6 +81,13 @@ final class Prefs {
 
     static boolean showHud(SharedPreferences p) {
         return p.getBoolean(SHOW_HUD, false);
+    }
+
+    /** On: a real keyboard plugged in or paired hides the on-screen one. The
+     *  off switch is for a mouse that Android mistakes for a keyboard, which
+     *  would otherwise take the only keyboard away. */
+    static boolean hideKeyboard(SharedPreferences p) {
+        return p.getBoolean(HIDE_KEYBOARD, true);
     }
 
     static float mouseSens(SharedPreferences p) {

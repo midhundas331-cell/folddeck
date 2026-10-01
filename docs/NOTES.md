@@ -353,9 +353,9 @@ the phone and a mouse for the laptop.
 - **Float, not permille.** A mouse delta smaller than one step must accumulate
   rather than truncate, which is what a low pointer-speed setting is made of.
   This fixed the same latent truncation in the TrackPoint nub.
-- **We draw the cursor** (`PointerPad.onDraw`), because capture hides the system
-  one. Accent fill on a background-coloured outline, both from the streamed
-  Omarchy palette, so it re-themes with everything else.
+- **No cursor is drawn on the phone** (removed in 0.3). Capture hides Android's
+  cursor, and the laptop's own pointer is already in the stream; an accent arrow
+  drawn on top only doubled it.
 
 Pointer speed is Settings → Mouse, `Prefs.MOUSE_SENS`, 0.25x–3.0x, where 1.0x
 tracks the desktop image one-to-one.
@@ -368,6 +368,45 @@ The video is letterboxed to the stream's real aspect ratio, which the decoder
 reports via `INFO_OUTPUT_FORMAT_CHANGED` rather than being hardcoded. Without
 that the SurfaceView stretches the buffer to the pane, which distorts the desktop
 *and* makes every touch land off-target, increasingly so towards the edges.
+
+### Physical keyboard (2026-10-01)
+
+A Bluetooth or USB keyboard attached to the phone types on the laptop, and the
+on-screen keyboard gets out of the way.
+
+- **Detection** is `Configuration.keyboard == KEYBOARD_QWERTY` with
+  `hardKeyboardHidden == NO`. The Fold has no keyboard of its own, so any QWERTY
+  is external. `keyboard` had to join `configChanges` in the manifest: pairing a
+  keyboard is a configuration change, and without it the Activity is recreated,
+  which drops the Surface, the socket and the lock.
+- **Layout**: the base (and hinge, and chassis) goes `GONE`, the lid takes the full
+  height, and the desktop fills as much as its aspect allows. The band it leaves
+  is no longer capped at `ROW_MAX_DP` — the shortcut deck takes all of it, as a
+  scrolling grid with `width / 208dp` columns once it is taller than one row.
+  Side-deck shapes are unchanged.
+- **Keys** go across as `KeyEvent.getScanCode()`, which is already the kernel's
+  evdev code — no keycode table. Only from `InputDevice.isExternal()` devices
+  (the phone's volume rocker has scancodes too), only codes 1–255 (above is mouse
+  buttons), only on the unlocked deck — elsewhere the keyboard types into the
+  phone. Android's auto-repeat DOWNs are dropped: a held key repeats on the
+  laptop. Held keys are tracked so a release still goes out after leaving the
+  deck mid-press.
+- **Escape hatch**: Settings → Appearance → "Hide keyboard when one is connected"
+  (`Prefs.HIDE_KEYBOARD`, default on), for a mouse that Android mistakes for a
+  QWERTY keyboard — some multi-device mice/receivers describe a full keyboard.
+
+- **Super/Meta**: One UI takes it for Home before any app sees it. Fixed with
+  Samsung's DeX remote-desktop API, `SemWindowManager.requestMetaKeyEvent(component,
+  true)`, called by reflection in `onResume` (off in `onPause`, so Super is Home
+  again outside the app). Signature confirmed by `dexdump` of the phone's
+  `framework.jar`; a non-Samsung phone logs a warning and carries on.
+- **Trackpads** (e.g. a keyboard's built-in one) arrive under pointer capture as
+  `SOURCE_MOUSE_RELATIVE` deltas with taps as `BUTTON_PRIMARY` press/release, so
+  they ride the existing Bluetooth-mouse path unchanged.
+
+Verified 2026-10-01 on the Fold 7 with a Cube Pocket Keyboard (BT, built-in
+trackpad): layout swap, letters/modifiers, Super, trackpad move + tap-click.
+Not yet seen in a log: two-finger scroll and two-finger right-click.
 
 ## Measured on this laptop (2026-07-28)
 
@@ -396,6 +435,7 @@ is actually installed.
 |---|---|---|
 | 0.1-spike | 1 | everything up to the Omarchy theme and shortcut deck |
 | 0.2 | 2 | Bluetooth mouse: pointer capture, themed cursor, `MSG_PTR_ABS16` |
+| 0.3 | 3 | Physical keyboard: hides the on-screen one, forwards evdev scancodes; full-height desktop + shortcut grid; drawn cursor removed |
 
 **0.2 needs a host from 2026-09-20 or later** — see the wire-format table under
 Input. Bump `versionCode` before building anything you plan to sideload.

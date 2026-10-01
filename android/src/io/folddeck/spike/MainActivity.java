@@ -6,6 +6,7 @@ import android.content.res.Configuration;
 import android.os.Bundle;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
@@ -78,6 +79,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private LockOverlay lockOverlay;
 
     private boolean locked = true;
+    /** False while a real keyboard stands in for the on-screen one. */
+    private boolean keyboardShown = true;
+    /** Physical keys down on the laptop, so each gets its release even if the
+     *  screen changed while it was held. */
+    private final java.util.Set<Integer> heldKeys = new java.util.HashSet<>();
     /** True once the user has chorded left+right to hand the mouse back to the
      *  phone. Sticky, because the chord is a toggle: re-grabbing the moment the
      *  desktop is on screen again would make it impossible to ever keep. */
@@ -383,6 +389,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             // turning the deck sideways for.
             boolean column = paneW - (int) (paneH * aspect) >= Ui.dp(this, ShortcutBar.COLUMN_MIN_DP);
             int x, y, vw, vh;
+            boolean grid = false;
             if (column) {
                 // Full height, flush right, always: no bars above or below the
                 // desktop. The deck takes whatever width is left and, when that is
@@ -393,7 +400,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 // bottom only without the hinge, for the separator line.
                 int line = Chassis.Lid.separator(this);
                 boolean chassis = lid.getPaddingTop() > 0;
-                vh = paneH - (chassis ? 2 : 1) * line;
+                vh = paneH - (chassis ? 2 : keyboardShown ? 1 : 0) * line;
                 vw = (int) (vh * aspect);
                 x = paneW - vw;
                 y = chassis ? line : 0;
@@ -401,8 +408,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 shortcutBar.setCompact(x < Ui.dp(this, ShortcutBar.COMPACT_BELOW_DP));
             } else {
                 int band = paneH - (int) (paneW / aspect);
-                band = Math.max(Ui.dp(this, ShortcutBar.ROW_MIN_DP),
-                        Math.min(band, Ui.dp(this, ShortcutBar.ROW_MAX_DP)));
+                // With the keyboard gone the band is no longer capped: the deck
+                // takes all of it, as a grid of rows once it is taller than one.
+                band = Math.max(Ui.dp(this, ShortcutBar.ROW_MIN_DP), keyboardShown
+                        ? Math.min(band, Ui.dp(this, ShortcutBar.ROW_MAX_DP)) : band);
+                grid = band > Ui.dp(this, ShortcutBar.ROW_MAX_DP);
                 vh = Math.min(paneH - band, (int) (paneW / aspect));
                 vw = (int) (vh * aspect);
                 // Any height the cap leaves over is split around the pair.
@@ -413,10 +423,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 shortcutBar.setCompact(false);
             }
             place(surfaceView, x, y, vw, vh);
-            shortcutBar.setVertical(column);
+            shortcutBar.setVertical(column || grid);
             // A deck side lying on the app frame stays open; see ShortcutBar.edges.
             boolean flushLeft = lid.getPaddingLeft() == 0, flushTop = lid.getPaddingTop() == 0;
-            shortcutBar.setEdges(!flushLeft, !(column && flushTop), !(!column && lid.getPaddingRight() == 0), true);
+            shortcutBar.setEdges(!flushLeft, !(column && flushTop), !(!column && lid.getPaddingRight() == 0), keyboardShown);
             pointerPad.setVideoBounds(x, y, x + vw, y + vh);
             // videoPane sits inside the lid's content box, so its origin in lid
             // coordinates is the lid's top-left padding.
@@ -487,6 +497,16 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     /**
+     * True while a physical keyboard is attached. The Fold has none of its own,
+     * so any QWERTY Android reports is one paired over Bluetooth or plugged in.
+     */
+    private boolean hardKeyboard() {
+        Configuration cfg = getResources().getConfiguration();
+        return cfg.keyboard == Configuration.KEYBOARD_QWERTY
+                && cfg.hardKeyboardHidden == Configuration.HARDKEYBOARDHIDDEN_NO;
+    }
+
+    /**
      * Put the seam where the crease is.
      *
      * Equal weights, with the hinge between them, is what makes the boundary land
@@ -495,7 +515,14 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
      * centimetre above the crease, which is why the keyboard looked short.
      */
     private void applyPosture() {
-        boolean laptop = laptopPosture();
+        // A Bluetooth or USB keyboard replaces the on-screen one; the base goes
+        // and the lid takes the whole height. No chassis then: the hinge only
+        // exists to mark the seam between screen and keyboard.
+        keyboardShown = !(Prefs.hideKeyboard(prefs) && hardKeyboard());
+        if (!keyboardShown) keyboard.releaseAll();
+        base.setVisibility(keyboardShown ? View.VISIBLE : View.GONE);
+        lid.setSeparated(keyboardShown);
+        boolean laptop = keyboardShown && laptopPosture();
 
         lid.setChassis(laptop);
         base.setChassis(laptop);
@@ -514,7 +541,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     /**
      * Folding and unfolding does not recreate the Activity — the manifest lists
      * screenSize, screenLayout and orientation in configChanges to keep the
-     * Surface and the socket alive across the change. That means this callback
+     * Surface and the socket alive across the change. keyboard is there for the
+     * same reason: pairing a keyboard is a configuration change too. That means this callback
      * is the only notification the layout gets that the posture moved.
      */
     @Override
@@ -600,6 +628,56 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         mouseHandedBack = false;
         updatePointerCapture();
         return true;
+    }
+
+    // ------------------------------------------------------------------ //
+    // Physical keyboard
+    //
+    // A key from a Bluetooth or USB keyboard carries the kernel's own evdev
+    // scancode, which is exactly what the host injects -- so it goes across
+    // untranslated, and every layout, modifier and Fn key behaves as the
+    // keyboard itself says. Only on the deck: everywhere else (the PIN, the
+    // address editor) the keyboard types into the phone.
+    // ------------------------------------------------------------------ //
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent ev) {
+        return forwardKey(ev) || super.dispatchKeyEvent(ev);
+    }
+
+    /**
+     * One UI takes the Meta (Super) key for Home before any app sees it, which
+     * makes every Hyprland binding unreachable. Samsung's DeX API for remote
+     * desktop apps hands it to this activity instead, while it is in front.
+     * Reflection, because it is Samsung-only: elsewhere this does nothing.
+     */
+    private void requestMetaKey(boolean on) {
+        try {
+            Class<?> wm = Class.forName("com.samsung.android.view.SemWindowManager");
+            Object instance = wm.getMethod("getInstance").invoke(null);
+            wm.getMethod("requestMetaKeyEvent", android.content.ComponentName.class, boolean.class)
+                    .invoke(instance, getComponentName(), on);
+        } catch (Throwable t) {
+            android.util.Log.w("FoldDeck", "no Samsung meta-key API: " + t);
+        }
+    }
+
+    private boolean forwardKey(KeyEvent ev) {
+        int code = ev.getScanCode();
+        // External only: the phone's own volume rocker has scancodes too. Codes
+        // above 255 are mouse buttons, which the pointer path already carries.
+        if (stream == null || code <= 0 || code > 255
+                || ev.getDevice() == null || !ev.getDevice().isExternal()) return false;
+        if (ev.getAction() == KeyEvent.ACTION_DOWN) {
+            if (locked || screen != SCREEN_DECK) return false;
+            // Android's own repeats are dropped: the laptop repeats a held key.
+            if (heldKeys.add(code)) stream.sendKey(code, true);
+            return true;
+        }
+        if (ev.getAction() == KeyEvent.ACTION_UP && heldKeys.remove(code)) {
+            stream.sendKey(code, false);
+            return true;
+        }
+        return false;
     }
 
     // ------------------------------------------------------------------ //
@@ -891,6 +969,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         // everything on disconnect).
         if (keyboard != null) keyboard.releaseAll();
         if (pointerPad != null) pointerPad.releaseAll();
+        heldKeys.clear();         // the host releases them as the socket goes
         if (stream != null) {
             stream.stop();
             stream = null;
@@ -1018,6 +1097,18 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     // Every lifecycle callback below can fire while the crash report is on
     // screen, where none of the UI exists. Guard rather than assume.
+    @Override
+    protected void onResume() {
+        super.onResume();
+        requestMetaKey(true);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        requestMetaKey(false);
+    }
+
     @Override
     protected void onStart() {
         super.onStart();

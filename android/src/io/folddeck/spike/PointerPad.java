@@ -1,9 +1,6 @@
 package io.folddeck.spike;
 
 import android.content.Context;
-import android.graphics.Canvas;
-import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
@@ -60,9 +57,6 @@ class PointerPad extends View {
      */
     static final int ABS_MAX = 65535;
 
-    /** Cursor arrow height, in dp. */
-    private static final float CURSOR_DP = 17f;
-
     static final int MODE_DIRECT = 0, MODE_TRACKPAD = 1;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -90,14 +84,11 @@ class PointerPad extends View {
     // what a low pointer-speed setting is made of.
     private float cursorX = 0.5f, cursorY = 0.5f;
 
-    // Mouse state: pointer speed, which of our buttons are held, and whether a
-    // captured mouse has moved yet -- before that there is no cursor to draw.
+    // Mouse state: pointer speed and which of our buttons are held. No cursor is
+    // drawn here: the laptop's own pointer is in the stream.
     private float mouseSens = 1f;
     private int held;
-    private boolean cursorVisible;
     private Runnable onHandBack;
-    private final Paint cursorPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Path cursorPath = new Path();
 
     private final Runnable longPress = new Runnable() {
         @Override
@@ -113,7 +104,6 @@ class PointerPad extends View {
     PointerPad(Context context) {
         super(context);
         touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
-        setWillNotDraw(false);
     }
 
     void setListener(Listener l) {
@@ -123,7 +113,6 @@ class PointerPad extends View {
     /** Where the video image actually sits, so touches map to host coordinates. */
     void setVideoBounds(int l, int t, int r, int b) {
         video.set(l, t, r, b);
-        if (cursorVisible) invalidate();
     }
 
     int getMode() {
@@ -303,7 +292,6 @@ class PointerPad extends View {
     }
 
     private void emitMove() {
-        if (cursorVisible) invalidate();
         if (listener != null) {
             listener.onMove(Math.round(cursorX * ABS_MAX), Math.round(cursorY * ABS_MAX));
         }
@@ -375,7 +363,6 @@ class PointerPad extends View {
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_MOVE:
             case MotionEvent.ACTION_HOVER_MOVE:
-                cursorVisible = true;
                 advance(e.getAxisValue(MotionEvent.AXIS_RELATIVE_X) * mouseSens,
                         e.getAxisValue(MotionEvent.AXIS_RELATIVE_Y) * mouseSens);
                 return true;
@@ -462,46 +449,7 @@ class PointerPad extends View {
         super.onPointerCaptureChange(hasCapture);
         if (!hasCapture) {
             releaseHeld();
-            cursorVisible = false;
-            invalidate();
         }
-    }
-
-    /**
-     * The cursor, in the desktop's own theme.
-     *
-     * Drawn here because pointer capture hides the system cursor -- that is what
-     * capture is -- so without this there is nothing on screen to aim with. The
-     * accent fill sits on a background-coloured outline so it stays visible over
-     * a white window and a dark one alike, and both colours come from the
-     * palette the laptop streams down, so it re-themes with everything else.
-     */
-    @Override
-    protected void onDraw(Canvas canvas) {
-        if (!cursorVisible || video.isEmpty()) return;
-
-        float h = Ui.dp(getContext(), CURSOR_DP), w = h * 0.62f;
-        float x = video.left + cursorX * video.width();
-        float y = video.top + cursorY * video.height();
-
-        cursorPath.reset();
-        cursorPath.moveTo(x, y);                                // tip: the hotspot
-        cursorPath.lineTo(x, y + h);
-        cursorPath.lineTo(x + w * 0.35f, y + h * 0.78f);
-        cursorPath.lineTo(x + w * 0.57f, y + h * 1.19f);
-        cursorPath.lineTo(x + w * 0.78f, y + h * 1.13f);
-        cursorPath.lineTo(x + w * 0.57f, y + h * 0.72f);
-        cursorPath.lineTo(x + w, y + h * 0.72f);
-        cursorPath.close();
-
-        cursorPaint.setStyle(Paint.Style.STROKE);
-        cursorPaint.setStrokeWidth(Ui.dp(getContext(), 2));
-        cursorPaint.setColor(Ui.BG);
-        canvas.drawPath(cursorPath, cursorPaint);
-
-        cursorPaint.setStyle(Paint.Style.FILL);
-        cursorPaint.setColor(Ui.ACCENT);
-        canvas.drawPath(cursorPath, cursorPaint);
     }
 
     @Override

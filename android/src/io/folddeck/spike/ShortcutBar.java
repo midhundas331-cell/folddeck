@@ -25,7 +25,8 @@ import java.util.List;
  *
  *  row     under the desktop (upright screens): one line of buttons, swiped sideways
  *  column  left of the desktop (landscape): two columns — one when the deck is
- *          squeezed narrow — scrolled down
+ *          squeezed narrow — scrolled down. Also the band under the desktop when
+ *          a real keyboard frees the space, with as many columns as fit
  *
  * Buttons stretch to fill the deck when there are few and keep a minimum size
  * when there are many; the spare space goes to the buttons, the overflow to the
@@ -258,7 +259,10 @@ class ShortcutBar extends FrameLayout {
                 cellW = (w - (n - 1) * line) / n;
                 cellH = h;
             } else {
-                cols = compact ? 1 : 2;
+                // Two columns beside the desktop; a side deck is never wide enough
+                // for more. The full-width band under it when a real keyboard has
+                // replaced the on-screen one is, and takes as many as fit.
+                cols = compact ? 1 : Math.max(2, MeasureSpec.getSize(ws) / (2 * minW));
                 w = MeasureSpec.getSize(ws);
                 int rows = rows();
                 int natural = rows * minH + (rows - 1) * line;

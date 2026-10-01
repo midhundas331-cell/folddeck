@@ -50,7 +50,7 @@ final class Chassis {
         private final RectF well = new RectF();
         private final float camR;
         private float camY;
-        private boolean chassis;
+        private boolean chassis, separated = true;
 
         Lid(Context c) {
             super(c);
@@ -134,6 +134,13 @@ final class Chassis {
                     well.centerX() + camR, camY + camR, paint);
         }
 
+        /** Off when there is no keyboard below to divide the desktop from. */
+        void setSeparated(boolean on) {
+            if (separated == on) return;
+            separated = on;
+            invalidate();
+        }
+
         /** Width of the line that stands in for the hinge when there is none. */
         static int separator(Context c) {
             return Ui.dp(c, 2);
@@ -142,7 +149,7 @@ final class Chassis {
         @Override
         protected void dispatchDraw(Canvas canvas) {
             super.dispatchDraw(canvas);
-            if (chassis) return;
+            if (chassis || !separated) return;
             // Without the hinge nothing divides the desktop from the keyboard. An
             // accent line does, drawn over the children so it lands exactly on the
             // deck's bottom border and the two read as one.

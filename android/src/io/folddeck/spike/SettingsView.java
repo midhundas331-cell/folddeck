@@ -63,6 +63,16 @@ class SettingsView extends Panel {
                 null),
                 Ui.fillW(c, 0));
 
+        body.addView(Ui.row(c, "Hide keyboard when one is connected",
+                "A Bluetooth or USB keyboard types on the laptop, and the desktop "
+                        + "and shortcuts take the space",
+                Ui.toggle(c, Prefs.hideKeyboard(prefs), on -> {
+                    Prefs.putBool(prefs, Prefs.HIDE_KEYBOARD, on);
+                    listener.onLaptopLayoutChanged();
+                }),
+                null),
+                Ui.fillW(c, 0));
+
         body.addView(Ui.row(c, "Statistics overlay",
                 "Bitrate, frame counts and decode latency over the video",
                 Ui.toggle(c, Prefs.showHud(prefs), on -> {

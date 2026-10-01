@@ -19,10 +19,14 @@ repaints within a second, without dropping the stream.
   TrackPoint.
 - **Pointer** — tap/long-press/double-tap-drag/two-finger scroll, direct or
   trackpad mode.
-- **Bluetooth mouse** — pair one with the phone and it drives the laptop, with a
-  themed cursor locked inside the desktop image at any fold or rotation.
+- **Bluetooth mouse** — pair one with the phone and it drives the laptop's own
+  cursor, kept inside the desktop image at any fold or rotation.
   Left+right together hands it back to the phone, and takes it back again.
   Adjustable pointer speed.
+- **Physical keyboard** — pair a Bluetooth keyboard (or plug in a dongle) and the
+  on-screen one steps aside: the desktop goes full width and the shortcuts fill
+  the rest. Keys go across as raw scancodes, Super included on Samsung phones;
+  a built-in trackpad works like the mouse.
 - **Laptop posture** — unfolded in landscape, the lid and keyboard split exactly on
   the crease with a hinge between them.
 - **Shortcut deck** — the space the 16:9 desktop leaves over holds Omarchy
