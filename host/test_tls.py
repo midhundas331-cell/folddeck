@@ -25,6 +25,7 @@ def use_temp_state() -> str:
     security.CERT_PATH = os.path.join(tmp, "server.crt")
     security.KEY_PATH = os.path.join(tmp, "server.key")
     security.AUTHORIZED_PATH = os.path.join(tmp, "authorized_clients")
+    security.PAIRING_PATH = os.path.join(tmp, "pairing_until")
     return tmp
 
 
@@ -76,15 +77,17 @@ def main() -> int:
     print(f"cert sha256:    {expected[:32]}...")
 
     ctx = security.server_context()
+    assert ctx.minimum_version == ssl.TLSVersion.TLSv1_3, "TLS 1.3 must be mandatory"
     port = 5090
     results: list = []
-    t = threading.Thread(target=run_server, args=(ctx, port, results, True), daemon=True)
+    security.open_pairing()
+    t = threading.Thread(target=run_server, args=(ctx, port, results, False), daemon=True)
     t.start()
 
     phone = secrets.token_bytes(security.TOKEN_BYTES)
     stranger = secrets.token_bytes(security.TOKEN_BYTES)
 
-    print("\n1. first device connects (should be trusted on first use)")
+    print("\n1. first device connects through the explicit pairing window")
     proto, fp = client_hello(port, phone, verify_fingerprint=expected)
     print(f"   negotiated {proto}, cert pin matches: {fp == expected}")
 
@@ -102,11 +105,11 @@ def main() -> int:
         and results[1][0] is False
         and len(paired) == 1
         and paired == {phone.hex()}
-        and proto in ("TLSv1.3", "TLSv1.2")
+        and proto == "TLSv1.3"
         and fp == expected
     )
     print(f"\npaired devices after both attempts: {len(paired)} (expected 1)")
-    print("\nPASS: TLS negotiated, first device pinned, stranger refused"
+    print("\nPASS: TLS 1.3 negotiated, paired device pinned, stranger refused"
           if ok else "\nFAIL")
 
     import shutil

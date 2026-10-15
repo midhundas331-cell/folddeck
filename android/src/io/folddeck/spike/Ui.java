@@ -28,7 +28,8 @@ import java.util.Map;
  * The look is Omarchy's shell, copied rather than approximated: square corners
  * (Omarchy's Style.cornerRadius follows Hyprland's rounding, which is 0), 1px
  * borders at 40% foreground, fills at 4% / 8% / 18% / 22% foreground for
- * normal / hover / selected / pressed, and JetBrains Mono throughout.
+ * normal / hover / selected / pressed. System sans carries product copy while
+ * JetBrains Mono is reserved for machine data, keys and terminal-like controls.
  *
  * There is no res/values/styles.xml because there is no Gradle: aapt2 is only
  * fed the launcher icon, and everything else is built in Java. This class is
@@ -108,13 +109,15 @@ final class Ui {
     static final float T_TITLE = 19f, T_BODY = 15f,
             T_LABEL = 13f, T_MICRO = 11f;
 
-    /** Omarchy's default font. Bundled, since the phone has no JetBrains Mono. */
-    static Typeface FONT = Typeface.MONOSPACE, FONT_BOLD = Typeface.MONOSPACE;
+    /** Product copy is quiet system sans; machine data and controls retain Omarchy mono. */
+    static Typeface FONT = Typeface.create("sans-serif", Typeface.NORMAL);
+    static Typeface FONT_BOLD = Typeface.create("sans-serif", Typeface.BOLD);
+    static Typeface MONO = Typeface.MONOSPACE, MONO_BOLD = Typeface.MONOSPACE;
 
     static void loadFonts(Context c) {
         try {
-            FONT = Typeface.createFromAsset(c.getAssets(), "fonts/JetBrainsMono-Regular.ttf");
-            FONT_BOLD = Typeface.createFromAsset(c.getAssets(), "fonts/JetBrainsMono-Bold.ttf");
+            MONO = Typeface.createFromAsset(c.getAssets(), "fonts/JetBrainsMono-Regular.ttf");
+            MONO_BOLD = Typeface.createFromAsset(c.getAssets(), "fonts/JetBrainsMono-Bold.ttf");
         } catch (RuntimeException e) {
             // A missing asset should cost the typeface, not the app.
             android.util.Log.w("FoldDeck/Ui", "bundled font missing, using monospace", e);
@@ -175,7 +178,7 @@ final class Ui {
     static TextView sectionLabel(Context c, String content) {
         TextView t = text(c, content.toUpperCase(java.util.Locale.US), T_MICRO, TEXT_FAINT);
         t.setLetterSpacing(0.14f);
-        t.setTypeface(FONT_BOLD);
+        t.setTypeface(MONO_BOLD);
         t.setPadding(dp(c, 4), dp(c, 20), 0, dp(c, 8));
         return t;
     }
@@ -200,6 +203,7 @@ final class Ui {
         b.setPadding(dp(c, 24), dp(c, 16), dp(c, 24), dp(c, 16));
         b.setBackground(pressable(outlined(mix(BG, ACCENT, 0.08f), ACCENT, 2, c)));
         b.setClickable(true);
+        Motion.press(b);
         b.setOnClickListener(v -> onClick.run());
         return b;
     }
@@ -211,6 +215,7 @@ final class Ui {
         b.setPadding(dp(c, 24), dp(c, 16), dp(c, 24), dp(c, 16));
         b.setBackground(pressable(outlined(SURFACE, LINE, 1, c)));
         b.setClickable(true);
+        Motion.press(b);
         b.setOnClickListener(v -> onClick.run());
         return b;
     }
@@ -237,6 +242,7 @@ final class Ui {
         r.setBackground(onClick == null ? shape : pressable(shape));
         if (onClick != null) {
             r.setClickable(true);
+            Motion.press(r);
             r.setOnClickListener(v -> onClick.run());
         }
 
@@ -360,7 +366,7 @@ final class Ui {
         android.widget.EditText e = new android.widget.EditText(c);
         e.setInputType(inputType);
         e.setSingleLine(true);
-        e.setTypeface(FONT);
+        e.setTypeface(MONO);
         e.setTextColor(TEXT);
         e.setHintTextColor(TEXT_FAINT);
         e.setHint(hint);

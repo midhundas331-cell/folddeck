@@ -85,7 +85,7 @@ class KeyboardView extends View {
     KeyboardView(Context context) {
         super(context);
         text.setTextAlign(Paint.Align.CENTER);
-        text.setTypeface(Ui.FONT);
+        text.setTypeface(Ui.MONO);
         edge.setStyle(Paint.Style.STROKE);
         edge.setStrokeWidth(Math.max(1, Ui.dp(context, 1)));
     }
@@ -205,9 +205,22 @@ class KeyboardView extends View {
 
     private void drawNub(Canvas canvas) {
         if (nubRadius <= 0f) return;
-        // Still TrackPoint red, but in the theme's red and on sharp corners.
+        boolean pressed = false;
+        for (int i = 0; i < byPointer.size(); i++) {
+            Press p = byPointer.valueAt(i);
+            if (p != null && p.isNub) { pressed = true; break; }
+        }
+        float r = nubRadius * (pressed ? 0.88f : 1f);
+        // The TrackPoint is the one deliberately round object in the product:
+        // a tactile red interruption in an otherwise machined square chassis.
+        fill.setColor(Ui.mix(Ui.BG, Ui.ERR, 0.34f));
+        canvas.drawCircle(nubX, nubY + Ui.dp(getContext(), 1), r * 1.26f, fill);
         fill.setColor(Ui.ERR);
-        canvas.drawRect(nubX - nubRadius, nubY - nubRadius, nubX + nubRadius, nubY + nubRadius, fill);
+        canvas.drawCircle(nubX, nubY, r, fill);
+        edge.setColor(Ui.mix(Ui.ERR, Ui.TEXT, 0.30f));
+        edge.setStrokeWidth(Math.max(1, Ui.dp(getContext(), 1)));
+        canvas.drawCircle(nubX, nubY, r * 0.67f, edge);
+        canvas.drawCircle(nubX, nubY, r * 0.36f, edge);
     }
 
     /** One-shot, locked, or Fn engaged: the states that outlast the finger. */
@@ -232,7 +245,8 @@ class KeyboardView extends View {
     }
 
     private int edgeFor(Ev.Key key) {
-        return held.contains(key.code) || isArmedOrLocked(key.code) ? Ui.ACCENT : Ui.LINE;
+        return held.contains(key.code) || isArmedOrLocked(key.code)
+                ? Ui.ACCENT : Ui.mix(Ui.BG, Ui.TEXT, 0.20f);
     }
 
     // ------------------------------------------------------------------ //
@@ -286,6 +300,7 @@ class KeyboardView extends View {
             p.lastX = x;
             p.lastY = y;
             byPointer.put(pointerId, p);
+            invalidate();
             return;
         }
 
@@ -295,8 +310,7 @@ class KeyboardView extends View {
         Press p = new Press();
         p.cap = cap;
         byPointer.put(pointerId, p);
-        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP,
-                HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
 
         int code = cap.key.code;
 
@@ -333,7 +347,10 @@ class KeyboardView extends View {
         Press p = byPointer.get(pointerId);
         if (p == null) return;
         byPointer.remove(pointerId);
-        if (p.isNub) return;
+        if (p.isNub) {
+            invalidate();
+            return;
+        }
 
         int code = p.cap.key.code;
 

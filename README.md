@@ -33,8 +33,8 @@ repaints within a second, without dropping the stream.
   shortcuts (Hyprland-style chords like `SUPER+SHIFT+B`): a swipeable row upright, a
   two-column scrolling deck in landscape. Add, edit, delete, and long-press-drag to
   rearrange.
-- **Omarchy look** — square controls, JetBrains Mono, an accent frame, and the
-  palette of whatever theme the laptop is running.
+- **Omarchy look** — machined square controls, a restrained sans/JetBrains Mono
+  type system, tactile motion, an accent frame, and the live laptop palette.
 - **Security** — TLS 1.3 with the host certificate pinned on the phone and the
   phone's token pinned on the host; PIN + fingerprint app lock; locking the phone
   stops the laptop capturing.
@@ -65,11 +65,12 @@ sudo usermod -aG input "$USER"      # then log out and back in
 # 2. Run the host
 pip install -r host/requirements.txt
 host/stream.py --probe              # which encoder works here
-host/stream.py                      # serve on 0.0.0.0:5000
+host/stream.py                      # serve securely on 0.0.0.0:5000
+python3 host/security.py pair       # open a one-use 2-minute pairing window
 
 # 3. Build and install the app
-android/build.sh                    # ~2 s, writes android/build/folddeck-spike.apk
-adb install -r android/build/folddeck-spike.apk
+android/build.sh                    # ~2 s, writes android/build/folddeck.apk
+adb install -r android/build/folddeck.apk
 ```
 
 Open FoldDeck, set a PIN, enter the laptop's address (`host:port`) and connect. To
@@ -82,12 +83,13 @@ losing its PIN and pairing.
 
 ## Security model — read before exposing the port
 
-- **The first device to connect is trusted** (trust-on-first-use) and can type and
-  click on your laptop. Pair on a network you trust, then keep the port off the
-  internet: bind to your LAN or `tailscale0`, and firewall everything else.
-- After pairing, the host accepts only that phone's token, and the phone refuses a
-  host whose certificate changed. Recovery for both is in Settings and
-  `host/security.py forget`.
+- Pairing is **closed by default**. `host/security.py pair` opens a one-use,
+  two-minute trust-on-first-use window; only open it while adding your phone.
+- Each host certificate gets its own phone credential. The host accepts only
+  explicitly paired credentials, and the phone stops on a certificate change.
+  `host/security.py forget` removes old pairings; run `pair` to add one again.
+- The app blocks Recents/screenshot capture, backups and cleartext traffic. Keep
+  the host port off the public internet: bind/firewall it to LAN or Tailscale.
 - The PIN is an app lock, not encryption. Details in
   [`docs/NOTES.md`](docs/NOTES.md#security).
 

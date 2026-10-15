@@ -42,6 +42,8 @@ final class Endpoints {
     final int homePort, awayPort;
 
     Endpoints(String homeHost, int homePort, String awayHost, int awayPort) {
+        homeHost = EndpointText.normalizeHost(homeHost);
+        awayHost = EndpointText.normalizeHost(awayHost);
         this.homeHost = empty(homeHost) ? null : homeHost;
         this.homePort = homePort;
         this.awayHost = empty(awayHost) ? null : awayHost;
@@ -65,7 +67,7 @@ final class Endpoints {
         }
 
         String describe() {
-            return host + ":" + port + " · " + label();
+            return EndpointText.format(host, port) + " · " + label();
         }
     }
 
@@ -88,9 +90,10 @@ final class Endpoints {
     String summary() {
         if (!isConfigured()) return null;
         if (!hasBoth()) return homeHost != null
-                ? homeHost + ":" + homePort
-                : awayHost + ":" + awayPort;
-        return homeHost + ":" + homePort + "  ·  " + awayHost + ":" + awayPort;
+                ? EndpointText.format(homeHost, homePort)
+                : EndpointText.format(awayHost, awayPort);
+        return EndpointText.format(homeHost, homePort) + "  ·  "
+                + EndpointText.format(awayHost, awayPort);
     }
 
     /**

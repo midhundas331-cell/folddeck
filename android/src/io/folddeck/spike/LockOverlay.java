@@ -7,6 +7,7 @@ import android.os.CancellationSignal;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 /**
@@ -29,6 +30,7 @@ class LockOverlay extends LinearLayout {
     private final Lock lock;
     private final Listener listener;
     private final Activity activity;
+    private final LinearLayout content;
 
     private final TextView title = new TextView(getContext());
     private final TextView hint = new TextView(getContext());
@@ -47,25 +49,36 @@ class LockOverlay extends LinearLayout {
         this.listener = listener;
 
         setOrientation(VERTICAL);
-        setGravity(Gravity.CENTER);
         setBackgroundColor(Ui.BG);
         // Swallow every touch so nothing reaches the stream behind it.
         setClickable(true);
         setFocusable(true);
 
+        content = new LinearLayout(activity);
+        content.setOrientation(VERTICAL);
+        content.setGravity(Gravity.CENTER);
+        content.setPadding(Ui.dp(activity, 12), Ui.dp(activity, 20),
+                Ui.dp(activity, 12), Ui.dp(activity, 20));
+        ScrollView scroll = new ScrollView(activity);
+        scroll.setFillViewport(true);
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.addView(content, new ScrollView.LayoutParams(
+                LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+        addView(scroll, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+
         LayoutParams markLp = new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
         markLp.setMargins(Ui.dp(activity, 32), 0, Ui.dp(activity, 32), Ui.dp(activity, 28));
         View mark = Ui.wordmark(activity, 300);
-        addView(mark, markLp);
+        content.addView(mark, markLp);
 
         title.setTextColor(Ui.TEXT);
         title.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, Ui.T_TITLE);
         title.setTypeface(Ui.FONT_BOLD);
         title.setGravity(Gravity.CENTER);
-        addView(title);
+        content.addView(title);
 
         buildDots();
-        addView(dots);
+        content.addView(dots);
 
         hint.setTextColor(Ui.TEXT_DIM);
         hint.setTypeface(Ui.FONT);
@@ -74,9 +87,9 @@ class LockOverlay extends LinearLayout {
         // One line is always reserved, even empty, so a message never shoves the
         // keypad down under a finger mid-PIN; only the padding around it is trimmed.
         hint.setPadding(Ui.dp(activity, 32), 0, Ui.dp(activity, 32), Ui.dp(activity, 6));
-        addView(hint);
+        content.addView(hint);
 
-        addView(buildKeypad());
+        content.addView(buildKeypad());
 
         biometricButton = Ui.text(activity, "Use fingerprint", Ui.T_BODY, Ui.ACCENT);
         biometricButton.setGravity(Gravity.CENTER);
@@ -85,12 +98,13 @@ class LockOverlay extends LinearLayout {
         biometricButton.setBackground(
                 Ui.pressable(Ui.square(Ui.BG)));
         biometricButton.setClickable(true);
+        Motion.press(biometricButton);
         biometricButton.setOnClickListener(v -> promptBiometric());
         LayoutParams bioLp = new LayoutParams(LayoutParams.WRAP_CONTENT,
                 LayoutParams.WRAP_CONTENT);
         bioLp.topMargin = Ui.dp(activity, 12);
         bioLp.gravity = Gravity.CENTER_HORIZONTAL;
-        addView(biometricButton, bioLp);
+        content.addView(biometricButton, bioLp);
 
         refresh();
     }
@@ -154,12 +168,14 @@ class LockOverlay extends LinearLayout {
         } else if (label.equals("⌫")) {
             b.setTextColor(Ui.TEXT_DIM);
             b.setClickable(true);
+            Motion.press(b);
             b.setOnClickListener(v -> {
                 if (entered.length() > 0) entered.deleteCharAt(entered.length() - 1);
                 refresh();
             });
         } else {
             b.setClickable(true);
+            Motion.press(b);
             b.setOnClickListener(v -> onDigit(label));
         }
         return b;
@@ -194,6 +210,7 @@ class LockOverlay extends LinearLayout {
                 title.setText("Set a 4-digit PIN");
                 hint.setTextColor(Ui.ERR);
                 hint.setText("Those did not match. Start again.");
+                Motion.shake(dots);
                 refresh();
                 return;
             }
@@ -210,6 +227,7 @@ class LockOverlay extends LinearLayout {
             hint.setText(lock.isLockedOut()
                     ? "Too many attempts. Reinstall to reset."
                     : "Wrong PIN. " + lock.attemptsRemaining() + " attempts left.");
+            Motion.shake(dots);
             refresh();
         }
     }
@@ -260,6 +278,7 @@ class LockOverlay extends LinearLayout {
         hint.setTextColor(Ui.TEXT_DIM);
         hint.setText(lock.isConfigured() ? "" : "You will need this each time the app opens");
         refresh();
+        Motion.enter(this);
         if (biometricAvailable() && !lock.isLockedOut()) promptBiometric();
     }
 

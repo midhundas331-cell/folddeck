@@ -134,6 +134,7 @@ class HomeView extends FrameLayout {
         card.setPadding(Ui.dp(c, 16), Ui.dp(c, 14), Ui.dp(c, 16), Ui.dp(c, 14));
         card.setBackground(Ui.pressable(Ui.outlined(Ui.SURFACE, Ui.LINE, 1, c)));
         card.setClickable(true);
+        Motion.press(card);
         card.setOnClickListener(v -> listener.onEditAddress());
 
         addressEmpty = Ui.text(c, "Not set — tap to add", Ui.T_BODY, Ui.WARN);
@@ -143,6 +144,8 @@ class HomeView extends FrameLayout {
         awayDot = new View(c);
         homeAddr = Ui.text(c, "", Ui.T_BODY, Ui.TEXT);
         awayAddr = Ui.text(c, "", Ui.T_BODY, Ui.TEXT);
+        homeAddr.setTypeface(Ui.MONO);
+        awayAddr.setTypeface(Ui.MONO);
         homeTag = Ui.text(c, "", Ui.T_MICRO, Ui.TEXT_FAINT);
         awayTag = Ui.text(c, "", Ui.T_MICRO, Ui.TEXT_FAINT);
 
@@ -208,8 +211,8 @@ class HomeView extends FrameLayout {
         homeRow.setVisibility(rows);
         awayRow.setVisibility(rows);
         if (!any) return;
-        homeAddr.setText(e.homeHost == null ? "not set" : e.homeHost + ":" + e.homePort);
-        awayAddr.setText(e.awayHost == null ? "not set" : e.awayHost + ":" + e.awayPort);
+        homeAddr.setText(e.homeHost == null ? "not set" : EndpointText.format(e.homeHost, e.homePort));
+        awayAddr.setText(e.awayHost == null ? "not set" : EndpointText.format(e.awayHost, e.awayPort));
         homeAddr.setTextColor(e.homeHost == null ? Ui.TEXT_FAINT : Ui.TEXT);
         awayAddr.setTextColor(e.awayHost == null ? Ui.TEXT_FAINT : Ui.TEXT);
         setRoute(-1);
@@ -248,6 +251,7 @@ class HomeView extends FrameLayout {
             default:               colour = Ui.TEXT_FAINT; label = "Not connected"; break;
         }
         stateDot.setBackground(Ui.square(colour));
+        Motion.status(stateDot, phase);
         stateText.setText(label);
         stateText.setTextColor(phase == PHASE_IDLE ? Ui.TEXT : colour);
         detailText.setText(detail == null ? "" : detail);

@@ -62,12 +62,16 @@ The app wears the laptop's current Omarchy theme and changes with it, live.
 - **Applying.** `MainActivity.applyTheme` caches the palette in prefs (so the
   app opens in the last theme offline), calls `Ui.apply`, invalidates the deck
   (keyboard, chassis and pointer chip read `Ui` colours at draw time) and
-  rebuilds Home, the lock screen and any open sheet in place. Not `recreate()`:
-  that destroys the Surface, drops the socket and re-locks.
-- **Look.** Omarchy's shell tokens, copied: corner radius 0, 1px borders at 40%
-  foreground, fills at 4 / 8 / 18 / 22 % foreground (normal / hover / selected /
-  pressed), accent for the one loud control, JetBrains Mono everywhere. Keys are
-  square caps with a 1px edge; a pressed key fills with the accent. The video
+  rebuilds Home, the lock screen and non-editing sheets in place. An open address
+  or shortcut editor stays alive until save/back so a theme event cannot erase
+  unsaved text or reorder work. Not `recreate()`: that destroys the Surface,
+  drops the socket and re-locks.
+- **Look.** Omarchy's shell tokens, copied: corner radius 0, restrained borders,
+  fills at 4 / 8 / 18 / 22 % foreground (normal / hover / selected / pressed),
+  and accent for the one loud control. Product copy uses Android's clean system
+  sans; addresses, status data, shortcut controls and keys use JetBrains Mono.
+  Keys are square caps with a quiet edge; a pressed key fills with the accent.
+  The TrackPoint is the one deliberately round, ringed interruption. The video
   wears Hyprland's active border (2dp accent). The lock screen is Omarchy's:
   a 3dp accent-outlined field that goes red on a wrong PIN. The FOLDDECK
   wordmark is drawn in the block letters of Omarchy's branding art, as
@@ -90,9 +94,9 @@ The app wears the laptop's current Omarchy theme and changes with it, live.
   one giant row), one line of flush buttons, swiped sideways. Landscape (wider):
   desktop flush against the right screen edge — the lid lost its right bezel —
   and the deck fills the whole left side as two columns, scrolled down. Buttons
-  are 1px-divided cells inside a 2dp accent border (`LinearLayout` dividers);
+  are softly 1px-divided cells inside a 1dp accent border;
   `fillViewport` + weights stretch them to fill when few, minimum 92×52dp when
-  many. A deck side lying on the app frame leaves its border off so the two 2dp
+  many. A deck side lying on the app frame leaves its border off so adjacent
   lines never double. First button DIRECT/TRACKPAD (moved off the video, where it
   covered the laptop's tray icons), then the shortcuts, then `+`.
 - **Rearranging.** Long-press a shortcut to pick it up. The deck is its own
@@ -145,7 +149,7 @@ stays, because there is no crease to align to and no height to spend.
 
 ## Security
 
-**Transport: TLS 1.2+ (1.3 in practice), always on.** The host generates a
+**Transport: TLS 1.3, always on.** The host generates a
 self-signed P-256 certificate on first run into `~/.config/folddeck/`
 (`server.key` is 0600). We don't hand-roll a transport — TLS is the thing that
 has actually been attacked for thirty years, and both ends ship it.
@@ -156,26 +160,43 @@ certificate it sees for a given `host:port` and requires an exact match forever
 after. A mismatch is **fatal, not a prompt** — the client stops and does not
 retry, because a changed host certificate is precisely what interception looks
 like, and an "accept anyway" button would discard the whole guarantee at the one
-moment it matters. Clear it deliberately if the host is genuinely reinstalled.
+moment it matters. Legacy bracketed IPv6 endpoint keys are migrated to the
+normalized form without losing the existing pin. Clear it deliberately if the
+host is genuinely reinstalled.
 
 **The host pins the phone.** After the handshake the client sends
-`[u8 version][32-byte token]`; the first token seen is written to
-`~/.config/folddeck/authorized_clients` and every later connection must match.
+`[u8 version][32-byte token]`. The token is scoped to the host certificate, so a
+new or malicious endpoint cannot learn a bearer credential valid at another
+host. Accepted tokens live in `~/.config/folddeck/authorized_clients`.
 
-Trust-on-first-use, both directions. **The first connection is the vulnerable
-one** — pair on a network you trust. After that a stranger who can reach the port
-gets rejected before any video flows.
+Trust-on-first-use is explicit. Pairing is closed unless `security.py pair` has
+opened a one-use two-minute window (or the foreground host was started with
+`--pairing`). A stranger who merely reaches the port cannot claim a fresh host.
 
 ```bash
 python3 host/security.py          # show cert fingerprint and paired devices
-python3 host/security.py forget   # unpair everything; next device claims the slot
-./host/stream.py --no-pairing     # refuse unknown devices instead of trusting one
+python3 host/security.py pair     # one unknown device may pair for 120 seconds
+python3 host/security.py forget   # remove every paired credential
+./host/stream.py --pairing        # foreground alternative for initial pairing
 ./host/stream.py --no-tls         # debugging only; traffic goes out in the clear
 ```
 
-Handshakes carry a 10s timeout. Without one, a connection that opens and says
-nothing pins the single-client accept loop forever — a trivial denial of service
-against an app whose entire job is to be available.
+Handshakes carry a 5s timeout on both host and phone and run in a bounded worker
+pool. Partially constructed phone sockets are closed on every failed connect.
+The encoder and uinput path stay single-client, but a socket that opens and says
+nothing no longer pins either endpoint or blocks every legitimate connection
+behind it. `--pairing` opens the same atomic one-use window as `security.py pair`,
+including when another phone is already authorized. The window marker is consumed
+before credential persistence, so a crash or disk error fails closed rather than
+leaving a second pairing claim available.
+
+Malformed video is bounded twice: no incomplete Annex-B NAL may grow past 8 MiB,
+and no assembled access unit may exceed 8 MiB or 4,096 NALs. Crossing either
+limit closes the connection instead of allowing peer-controlled heap growth.
+
+The Activity ignores external endpoint extras, excludes credential state from
+backups, disallows cleartext traffic, and sets `FLAG_SECURE` so the streamed
+desktop does not appear in screenshots or the Recents snapshot.
 
 ## App lock
 
@@ -440,6 +461,7 @@ is actually installed.
 | 0.1-spike | 1 | everything up to the Omarchy theme and shortcut deck |
 | 0.2 | 2 | Bluetooth mouse: pointer capture, themed cursor, `MSG_PTR_ABS16` |
 | 0.3 | 3 | Physical keyboard: hides the on-screen one, forwards evdev scancodes; full-height desktop + shortcut grid; drawn cursor removed |
+| 0.4 | 4 | Explicit pairing window, per-host phone credentials, TLS 1.3 only, DoS/input/parser hardening, bounded decoder scheduling, premium motion/type hierarchy and TrackPoint polish |
 
 **0.2 needs a host from 2026-09-20 or later** — see the wire-format table under
 Input. Bump `versionCode` before building anything you plan to sideload.
@@ -450,15 +472,15 @@ Input. Bump `versionCode` before building anything you plan to sideload.
 ./android/build.sh            # ~2s, no Gradle, no network
 ```
 
-Built APK: `android/build/folddeck-spike.apk` (17 KB, signed, min API 31).
+Built APK: `android/build/folddeck.apk` (226,848 bytes, v3-signed, min API 31).
 
 ### With a USB cable — lowest latency, measure this first
 
 ```bash
-adb install -r android/build/folddeck-spike.apk
+adb install -r android/build/folddeck.apk
 adb reverse tcp:5000 tcp:5000
 ./host/stream.py --bind 127.0.0.1 --clock
-adb shell am start -n io.folddeck.spike/.MainActivity --es host 127.0.0.1 --ei port 5000
+adb shell am start -n io.folddeck.spike/.MainActivity
 ```
 
 ### Without adb (sideload)
@@ -467,7 +489,7 @@ The app prompts for `host:port` on first launch and remembers it, so no intent
 extras are needed. From the phone:
 
 ```bash
-scp <you>@<laptop-ip>:~/folddeck/android/build/folddeck-spike.apk /sdcard/Download/
+scp <you>@<laptop-ip>:~/folddeck/android/build/folddeck.apk /sdcard/Download/
 ```
 
 Then tap it in Files to install, launch, and enter one of:
@@ -516,7 +538,7 @@ and `keytool` need the JVM.
 Verified by running it:
 - encoder probe, encoder headroom, live capture — host works end to end
 - the served stream is valid decodable H.264 with the expected NAL order
-- **the APK builds clean and its signature verifies** (v3 scheme, 17 KB); both
+- **the APK builds clean and its signature verifies** (v3 scheme, 226,848 bytes); both
   classes are present in the dex with lambdas desugared
 - **the Annex-B access-unit splitter**: the exact `drainNals()`/`onNal()`
   algorithm ported to Python and run against a real 173 KB capture fed in 1-, 3-,

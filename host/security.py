@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """TLS identity and client authorisation for the FoldDeck host.
 
-Transport is TLS 1.2+ with a self-signed server certificate that the phone pins
+Transport is TLS 1.3 with a self-signed server certificate that the phone pins
 on first connect. We do not hand-roll a transport protocol: TLS is the thing
 that has actually been attacked for thirty years, and Python ships it.
 
-Client authorisation is trust-on-first-use. The first phone to connect has its
-token recorded; after that, only that token is accepted. That means the *first*
-connection is the vulnerable one -- pair on a network you trust -- but every
-connection afterwards is both encrypted and authorised, and a stranger who can
-reach the port gets nothing.
+Client authorisation is explicit trust-on-first-use. Pairing is disabled by
+default; the operator starts the host with --pairing for the one connection that
+should claim a fresh host. Afterwards only recorded tokens are accepted.
 
 State lives in ~/.config/folddeck/ with 0600 permissions:
     server.crt / server.key   the host's TLS identity
@@ -22,15 +20,19 @@ import os
 import secrets
 import ssl
 import stat
+import threading
+import time
 
 STATE_DIR = os.path.expanduser("~/.config/folddeck")
 CERT_PATH = os.path.join(STATE_DIR, "server.crt")
 KEY_PATH = os.path.join(STATE_DIR, "server.key")
 AUTHORIZED_PATH = os.path.join(STATE_DIR, "authorized_clients")
+PAIRING_PATH = os.path.join(STATE_DIR, "pairing_until")
 
 TOKEN_BYTES = 32
 HELLO_VERSION = 1
 HELLO_LEN = 1 + TOKEN_BYTES
+_AUTH_LOCK = threading.Lock()
 
 
 def _ensure_state_dir() -> None:
@@ -94,9 +96,9 @@ def cert_fingerprint() -> str:
 def server_context() -> ssl.SSLContext:
     cert, key = ensure_identity()
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    # TLS 1.2 floor. 1.3 is negotiated when both ends support it, which they do:
-    # OpenSSL 3.0 here, and Android 12+ on the phone.
-    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    # FoldDeck requires Android 12+, whose TLS provider supports 1.3. Refusing
+    # 1.2 removes obsolete cipher/configuration surface without losing a client.
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_3
     ctx.load_cert_chain(certfile=cert, keyfile=key)
     return ctx
 
@@ -120,14 +122,45 @@ def authorize(token_hex: str) -> None:
 
 
 def forget_all() -> int:
-    """Drop every paired client. Next device to connect becomes the trusted one."""
+    """Drop every paired client. Pairing still has to be opened explicitly."""
     n = len(load_authorized())
     if os.path.exists(AUTHORIZED_PATH):
         os.remove(AUTHORIZED_PATH)
     return n
 
 
-def check_hello(blob: bytes, allow_new: bool) -> tuple[bool, str, str]:
+def open_pairing(seconds: int = 120, now: float | None = None) -> float:
+    """Allow one unknown credential to pair before the short deadline."""
+    if seconds < 15 or seconds > 600:
+        raise ValueError("pairing window must be between 15 and 600 seconds")
+    _ensure_state_dir()
+    until = (time.time() if now is None else now) + seconds
+    fd = os.open(PAIRING_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(f"{until:.3f}\n")
+    return until
+
+
+def close_pairing() -> None:
+    try:
+        os.remove(PAIRING_PATH)
+    except FileNotFoundError:
+        pass
+
+
+def pairing_open(now: float | None = None) -> bool:
+    try:
+        with open(PAIRING_PATH) as fh:
+            until = float(fh.read().strip())
+    except (FileNotFoundError, OSError, ValueError):
+        return False
+    if (time.time() if now is None else now) <= until:
+        return True
+    close_pairing()
+    return False
+
+
+def check_hello(blob: bytes, allow_new: bool, now: float | None = None) -> tuple[bool, str, str]:
     """Validate the client's opening message.
 
     Returns (accepted, token_hex, reason).
@@ -138,14 +171,23 @@ def check_hello(blob: bytes, allow_new: bool) -> tuple[bool, str, str]:
         return False, "", f"unsupported hello version {blob[0]}"
 
     token = blob[1:].hex()
-    known = load_authorized()
-
-    if token in known:
-        return True, token, "known device"
-    if not known and allow_new:
-        authorize(token)
-        return True, token, "NEW DEVICE PAIRED (trust-on-first-use)"
-    return False, token, "unknown device -- rejected"
+    # Handshakes run concurrently. Claiming the one-use window, persisting the
+    # token and closing the window must be one transaction or several clients
+    # can all observe it open and pair at once.
+    with _AUTH_LOCK:
+        known = load_authorized()
+        if token in known:
+            return True, token, "known device"
+        window = pairing_open(now)
+        if window or (not known and allow_new):
+            # Consume the one-use capability before persistence. If the process
+            # dies or the state write fails, pairing is fail-closed rather than
+            # leaving the marker available to a second client after restart.
+            if window:
+                close_pairing()
+            authorize(token)
+            return True, token, "NEW DEVICE PAIRED (trust-on-first-use)"
+        return False, token, "unknown device -- rejected"
 
 
 def new_token() -> str:
@@ -157,6 +199,10 @@ if __name__ == "__main__":
 
     if len(sys.argv) > 1 and sys.argv[1] == "forget":
         print(f"forgot {forget_all()} paired device(s)")
+    elif len(sys.argv) > 1 and sys.argv[1] == "pair":
+        seconds = int(sys.argv[2]) if len(sys.argv) > 2 else 120
+        until = open_pairing(seconds)
+        print(f"pairing open for {seconds}s (until {datetime.datetime.fromtimestamp(until)})")
     else:
         ensure_identity()
         print(f"state dir:    {STATE_DIR}")

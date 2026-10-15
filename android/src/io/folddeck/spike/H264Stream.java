@@ -128,19 +128,26 @@ final class H264Stream implements Runnable {
 
     private volatile boolean running = true;
     private MediaCodec codec;
+    private final MediaCodec.BufferInfo outputInfo = new MediaCodec.BufferInfo();
 
-    /** Outbound key events. Bounded so a dead socket can't grow it without limit. */
-    private final java.util.concurrent.BlockingQueue<byte[]> outbox =
-            new java.util.concurrent.ArrayBlockingQueue<>(256);
-    private volatile java.io.OutputStream out;
+    /** Reliable key/button transitions plus a coalesced latest pointer sample. */
+    private final InputOutbox outbox = new InputOutbox();
+    private volatile OutputTarget outputTarget;
+    private volatile Socket activeSocket;
+    private volatile Thread writerThread;
 
-    // Stream accumulator. 1 MiB is comfortably more than one 1080p IDR.
+    // Stream accumulator. 1 MiB is comfortably more than one 1080p IDR; 8 MiB
+    // is a hard protocol limit so a peer cannot grow the process without bound.
+    static final int MAX_STREAM_BUFFER = 8 << 20;
+    static final int MAX_ACCESS_UNIT = 8 << 20;
+    static final int MAX_ACCESS_UNIT_NALS = 4096;
     private byte[] buf = new byte[1 << 20];
     private int len = 0;
 
     // Current access unit under construction, as a list of complete NAL units
     // (each already prefixed with a 4-byte start code).
     private final List<byte[]> auNals = new ArrayList<>();
+    private int auBytes = 0;
     private boolean auHasVcl = false;
 
     private byte[] sps, pps;
@@ -161,6 +168,10 @@ final class H264Stream implements Runnable {
 
     void stop() {
         running = false;
+        closeQuietly(activeSocket);
+        Thread writer = writerThread;
+        if (writer != null) writer.interrupt();
+        outbox.clear();
     }
 
     /**
@@ -205,27 +216,48 @@ final class H264Stream implements Runnable {
     }
 
     private void offer(byte[] msg) {
-        // Drop rather than block the UI thread if the socket has stalled. Losing
-        // a motion sample is invisible; a frozen UI is not.
-        outbox.offer(msg);
+        // Pointer samples coalesce, while key/button transitions remain ordered.
+        // If the defensive reliable-event ceiling is ever reached, close the
+        // connection: the host releases every held input on disconnect, which is
+        // safer than silently losing a KEY_UP while pretending to stay connected.
+        if (!outbox.offer(msg)) {
+            Log.e(TAG, "input backlog overflow; resetting connection");
+            closeQuietly(activeSocket);
+        }
     }
 
     private void writerLoop() {
         while (running) {
+            OutputTarget target = null;
             try {
-                byte[] msg = outbox.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS);
-                java.io.OutputStream o = out;
-                if (msg == null || o == null) continue;
-                o.write(msg);
+                byte[] msg = outbox.take(200);
+                target = outputTarget;
+                if (msg == null || target == null) continue;
+                target.output.write(msg);
                 // Flush per event. Batching would add a scheduling quantum of
                 // latency to every keystroke, which you feel while typing.
-                o.flush();
+                target.output.flush();
             } catch (InterruptedException e) {
                 return;
             } catch (Throwable t) {
                 Log.w(TAG, "key write failed", t);
+                closeFailedTarget(target);
             }
         }
+    }
+
+    static final class OutputTarget {
+        final Socket socket;
+        final java.io.OutputStream output;
+
+        OutputTarget(Socket socket, java.io.OutputStream output) {
+            this.socket = socket;
+            this.output = output;
+        }
+    }
+
+    static void closeFailedTarget(OutputTarget target) {
+        if (target != null) closeQuietly(target.socket);
     }
 
     @Override
@@ -237,6 +269,7 @@ final class H264Stream implements Runnable {
 
         Thread writer = new Thread(this::writerLoop, "folddeck-keys");
         writer.setDaemon(true);
+        writerThread = writer;
         writer.start();
 
         int consecutiveFailures = 0;
@@ -250,19 +283,22 @@ final class H264Stream implements Runnable {
                 // the tail of each frame into the next write and add a full frame
                 // of latency for no bandwidth gain.
                 socket = Secure.connect(prefs, host, port, 5000);
+                activeSocket = socket;
                 opened = true;
                 consecutiveFailures = 0;
-                out = socket.getOutputStream();
+                outputTarget = new OutputTarget(socket, socket.getOutputStream());
                 report("streaming");
                 pump(socket.getInputStream());
-            } catch (Secure.PinMismatchException t) {
-                // Do not reconnect: a changed host certificate is exactly what an
-                // interception attempt looks like. Stop and make the user decide.
-                Log.e(TAG, "certificate pin mismatch", t);
-                report("SECURITY: host identity changed - not connecting");
-                if (problemListener != null) problemListener.onPinMismatch(t.getMessage());
-                running = false;
             } catch (Throwable t) {
+                // TrustManager failures are commonly wrapped by SSLHandshakeException;
+                // inspect the full cause chain rather than silently retrying forever.
+                if (Secure.isPinMismatch(t)) {
+                    Log.e(TAG, "certificate pin mismatch", t);
+                    report("SECURITY: host identity changed - not connecting");
+                    if (problemListener != null) problemListener.onPinMismatch(t.getMessage());
+                    running = false;
+                    continue;
+                }
                 Log.w(TAG, "stream error", t);
                 report("error: " + t.getMessage());
                 // Only a failure to *open* the socket says anything about the
@@ -276,9 +312,11 @@ final class H264Stream implements Runnable {
                     }
                 }
             } finally {
-                out = null;
+                OutputTarget target = outputTarget;
+                if (target != null && target.socket == socket) outputTarget = null;
                 outbox.clear();
                 closeQuietly(socket);
+                if (activeSocket == socket) activeSocket = null;
                 releaseCodec();
                 reset();
             }
@@ -309,13 +347,37 @@ final class H264Stream implements Runnable {
     // Annex-B parsing
     // ------------------------------------------------------------------ //
     private void append(byte[] data, int n) {
-        if (len + n > buf.length) {
-            byte[] bigger = new byte[Math.max(buf.length * 2, len + n)];
+        int needed = Math.addExact(len, n);
+        if (needed > buf.length) {
+            byte[] bigger = new byte[grownCapacity(buf.length, needed)];
             System.arraycopy(buf, 0, bigger, 0, len);
             buf = bigger;
         }
         System.arraycopy(data, 0, buf, len, n);
         len += n;
+    }
+
+    static int grownCapacity(int current, int needed) {
+        if (needed < 0 || needed > MAX_STREAM_BUFFER) {
+            throw new IllegalArgumentException("H.264 stream unit exceeds "
+                    + MAX_STREAM_BUFFER + " bytes");
+        }
+        if (needed <= current) return current;
+        long doubled = (long) current * 2L;
+        return (int) Math.min(MAX_STREAM_BUFFER, Math.max(doubled, needed));
+    }
+
+    static int nextAccessUnitBytes(int current, int nalLength, int nalCount) {
+        if (current < 0 || nalLength < 1 || nalCount < 0
+                || nalCount >= MAX_ACCESS_UNIT_NALS) {
+            throw new IllegalArgumentException("invalid H.264 access unit");
+        }
+        long next = (long) current + 4L + nalLength;
+        if (next > MAX_ACCESS_UNIT) {
+            throw new IllegalArgumentException("H.264 access unit exceeds "
+                    + MAX_ACCESS_UNIT + " bytes");
+        }
+        return (int) next;
     }
 
     /** Index of the next 00 00 01 at or after {@code from}, or -1. */
@@ -382,6 +444,7 @@ final class H264Stream implements Runnable {
         if (type == 7) sps = nal;
         if (type == 8) pps = nal;
 
+        auBytes = nextAccessUnitBytes(auBytes, nal.length, auNals.size());
         auNals.add(nal);
         auHasVcl |= isVcl;
 
@@ -393,13 +456,12 @@ final class H264Stream implements Runnable {
     private void flushAccessUnit() {
         if (codec == null || auNals.isEmpty()) {
             auNals.clear();
+            auBytes = 0;
             auHasVcl = false;
             return;
         }
 
-        int size = 0;
-        for (byte[] nal : auNals) size += 4 + nal.length;
-        byte[] au = new byte[size];
+        byte[] au = new byte[auBytes];
         int o = 0;
         boolean keyframe = false;
         for (byte[] nal : auNals) {
@@ -409,6 +471,7 @@ final class H264Stream implements Runnable {
             if ((nal[0] & 0x1F) == 5) keyframe = true;
         }
         auNals.clear();
+        auBytes = 0;
         auHasVcl = false;
 
         queue(au, keyframe);
@@ -449,10 +512,11 @@ final class H264Stream implements Runnable {
 
     private void queue(byte[] au, boolean keyframe) {
         try {
-            // Zero timeout: if no input buffer is free the decoder is behind, and
-            // blocking here would build a latency debt that never drains. Drop
-            // instead — a remote desktop wants the newest frame, not every frame.
-            int idx = codec.dequeueInputBuffer(0);
+            // Release completed output before asking for more input. Otherwise a
+            // full output side can make dequeueInputBuffer() fail, and returning
+            // there would prevent the output side from ever being drained.
+            int idx = dequeueAfterDrain(this::drainOutputs,
+                    () -> codec.dequeueInputBuffer(0));
             if (idx < 0) {
                 dropped++;
                 return;
@@ -465,32 +529,35 @@ final class H264Stream implements Runnable {
             long ptsUs = System.nanoTime() / 1000;
             codec.queueInputBuffer(idx, 0, au.length, ptsUs,
                     keyframe ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0);
-
-            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-            while (true) {
-                int out = codec.dequeueOutputBuffer(info, 0);
-                if (out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    // The authoritative stream size, from the decoder's own SPS
-                    // parse. Beats hardcoding, which silently misaligns every
-                    // touch if the host is run at a different resolution.
-                    MediaFormat fmt = codec.getOutputFormat();
-                    if (sizeListener != null) {
-                        sizeListener.onVideoSize(fmt.getInteger(MediaFormat.KEY_WIDTH),
-                                fmt.getInteger(MediaFormat.KEY_HEIGHT));
-                    }
-                    continue;
-                }
-                if (out < 0) break;
-                recordDecodeTime(System.nanoTime() / 1000 - info.presentationTimeUs);
-                // Render immediately, with no timestamp. Passing one asks
-                // SurfaceFlinger to schedule the frame at a future vsync — right
-                // for a media player, wrong for a remote desktop.
-                codec.releaseOutputBuffer(out, true);
-                decoded++;
-            }
+            drainOutputs();
         } catch (Throwable t) {
             Log.e(TAG, "queue failed", t);
             releaseCodec();
+        }
+    }
+
+    static int dequeueAfterDrain(Runnable drain, java.util.function.IntSupplier dequeue) {
+        drain.run();
+        return dequeue.getAsInt();
+    }
+
+    private void drainOutputs() {
+        while (true) {
+            int out = codec.dequeueOutputBuffer(outputInfo, 0);
+            if (out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                MediaFormat fmt = codec.getOutputFormat();
+                if (sizeListener != null) {
+                    sizeListener.onVideoSize(fmt.getInteger(MediaFormat.KEY_WIDTH),
+                            fmt.getInteger(MediaFormat.KEY_HEIGHT));
+                }
+                continue;
+            }
+            if (out < 0) return;
+            recordDecodeTime(System.nanoTime() / 1000 - outputInfo.presentationTimeUs);
+            // Render immediately. Timestamped release is right for playback but
+            // adds avoidable scheduling latency to an interactive desktop.
+            codec.releaseOutputBuffer(out, true);
+            decoded++;
         }
     }
 
@@ -517,6 +584,7 @@ final class H264Stream implements Runnable {
     private void reset() {
         len = 0;
         auNals.clear();
+        auBytes = 0;
         auHasVcl = false;
         sps = pps = null;
     }

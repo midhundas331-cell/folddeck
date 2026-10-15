@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the phase-0 spike APK with no Gradle: aapt2 + javac + d8 + apksigner.
+# Build the FoldDeck APK with no Gradle: aapt2 + javac + d8 + apksigner.
 #
 # Everything here ships with the Android SDK already, so there is no wrapper jar
 # to fetch and no dependency resolution. Builds in about two seconds.
@@ -99,7 +99,7 @@ if [ ! -f "$KEYSTORE" ]; then
     keytool -genkeypair \
         -keystore "$KEYSTORE" -storepass android -keypass android \
         -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
-        -dname "CN=FoldDeck Spike, OU=dev, O=dev, L=dev, S=dev, C=GB"
+        -dname "CN=FoldDeck, OU=dev, O=dev, L=dev, S=dev, C=GB"
     if [ -d "$HOME/.secrets" ]; then
         install -m 0600 "$KEYSTORE" "$BACKUP_KEYSTORE"
         echo "      backed up to $BACKUP_KEYSTORE"
@@ -109,14 +109,14 @@ fi
     --ks "$KEYSTORE" --ks-pass pass:android --key-pass pass:android \
     --ks-key-alias androiddebugkey \
     --min-sdk-version "$MIN_SDK" \
-    --out "$OUT/folddeck-spike.apk" \
+    --out "$OUT/folddeck.apk" \
     "$OUT/aligned.apk"
 
 rm -f "$OUT/base.apk" "$OUT/aligned.apk" "$OUT/aligned.apk.idsig"
 echo
-echo "built: $OUT/folddeck-spike.apk"
+echo "built: $OUT/folddeck.apk"
 echo
 echo "next:"
-echo "  adb install -r $OUT/folddeck-spike.apk"
+echo "  adb install -r $OUT/folddeck.apk"
 echo "  adb reverse tcp:5000 tcp:5000"
-echo "  adb shell am start -n $PKG/.MainActivity --es host 127.0.0.1 --ei port 5000"
+echo "  adb shell am start -n $PKG/.MainActivity"

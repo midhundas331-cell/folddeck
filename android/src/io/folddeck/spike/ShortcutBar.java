@@ -50,7 +50,7 @@ class ShortcutBar extends FrameLayout {
     /** Row deck height bounds; the narrowest side band worth a column; the width
      *  below which the column goes single and small; all in dp. */
     static final int ROW_MIN_DP = 52, ROW_MAX_DP = 72, COLUMN_MIN_DP = 48, COMPACT_BELOW_DP = 176;
-    private static final int CELL_MIN_W_DP = 104, CELL_MIN_H_DP = 52, BORDER_DP = 2;
+    private static final int CELL_MIN_W_DP = 104, CELL_MIN_H_DP = 52, BORDER_DP = 1;
 
     private final Listener listener;
     private final HorizontalScrollView row;
@@ -167,6 +167,7 @@ class ShortcutBar extends FrameLayout {
     private TextView cell(String label, View.OnClickListener onClick) {
         Context c = getContext();
         TextView t = Ui.text(c, label, compact ? Ui.T_MICRO : Ui.T_LABEL, Ui.TEXT);
+        t.setTypeface(Ui.MONO);
         if (compact) {
             t.setMaxLines(2);
         } else {
@@ -178,6 +179,7 @@ class ShortcutBar extends FrameLayout {
         int pad = Ui.dp(c, compact ? 3 : 10);
         t.setPadding(pad, 0, pad, 0);
         t.setBackground(Ui.pressable(Ui.square(Ui.SURFACE)));
+        Motion.press(t);
         t.setOnClickListener(onClick);
         return t;
     }
@@ -185,7 +187,7 @@ class ShortcutBar extends FrameLayout {
     /** Restyled in place rather than rebuilt, so toggling does not lose the scroll. */
     private void styleModeCell() {
         modeCell.setText(trackpad ? (compact ? "TRACK" : "TRACKPAD") : "DIRECT");
-        modeCell.setTypeface(Ui.FONT_BOLD);
+        modeCell.setTypeface(Ui.MONO_BOLD);
         modeCell.setTextColor(trackpad ? Ui.ACCENT : Ui.TEXT_DIM);
         modeCell.setBackground(Ui.pressable(Ui.square(trackpad ? Ui.SELECTED : Ui.SURFACE)));
     }
@@ -307,7 +309,7 @@ class ShortcutBar extends FrameLayout {
         protected void dispatchDraw(Canvas canvas) {
             // The 1px board lines are the gaps between cells showing this colour;
             // an empty slot at the end of an odd column is painted back to ground.
-            canvas.drawColor(Ui.LINE);
+            canvas.drawColor(Ui.mix(Ui.BG, Ui.TEXT, 0.18f));
             paint.setColor(Ui.BG);
             for (int slot = order.size(); slot < rows() * cols; slot++) {
                 int x = (slot % cols) * (cellW + line), y = (slot / cols) * (cellH + line);

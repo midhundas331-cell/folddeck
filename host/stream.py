@@ -11,8 +11,9 @@ Usage:
     ./stream.py --bind 127.0.0.1        # USB mode, pair with `adb reverse tcp:5000 tcp:5000`
     ./stream.py --clock                 # also open a millisecond clock to film
 
-A fresh ffmpeg is spawned per connection, so every client starts on an IDR and
-reconnects cleanly. That is also why -g 9999 is safe here.
+A fresh encoder is spawned per connection, so every client starts on an IDR.
+While connected, another IDR is emitted every two seconds so a damaged/dropped
+decode unit recovers instead of freezing for the lifetime of the connection.
 """
 from __future__ import annotations
 
@@ -69,7 +70,7 @@ ENCODERS: list[tuple[str, list[str]]] = [
     ),
 ]
 
-COMMON = ["-g", "9999", "-bf", "0", "-profile:v", "main"]
+COMMON = ["-bf", "0", "-profile:v", "main"]
 
 # wf-recorder equivalents of the ENCODERS above. x11grab cannot see a Wayland
 # session at all, so on Hyprland the capture side is wf-recorder instead of
@@ -88,7 +89,7 @@ WF_ENCODERS: dict[str, list[str]] = {
                   "-p", "b={bitrate}", "-p", "maxrate={bitrate}", "-p", "bufsize={bufsize}"],
 }
 
-WF_COMMON = ["-p", "g=9999", "-b", "0", "-p", "profile=main"]
+WF_COMMON = ["-b", "0", "-p", "profile=main"]
 
 
 def stream_source(args) -> str:
@@ -117,12 +118,12 @@ def wayland_output(preferred: str = "") -> str:
     return "eDP-1"
 
 
-def encoder_args(name: str, bitrate_kbps: int) -> list[str]:
+def encoder_args(name: str, bitrate_kbps: int, gop: int = 9999) -> list[str]:
     args = dict(ENCODERS)[name]
     return [
         a.format(bitrate=f"{bitrate_kbps}k", bufsize=f"{bitrate_kbps // 4}k")
         for a in args
-    ] + COMMON
+    ] + ["-g", str(gop)] + COMMON
 
 
 def probe_encoder(bitrate_kbps: int, verbose: bool = True) -> str:
@@ -171,7 +172,7 @@ def wayland_capture_cmd(args, encoder: str) -> list[str]:
         "--no-damage",                      # constant rate; damage-driven is bursty
         "-o", wayland_output(args.output),
         "-r", str(args.fps),
-        *enc, *WF_COMMON,
+        *enc, "-p", f"g={max(1, args.fps * 2)}", *WF_COMMON,
         "-m", "h264", "-f", "pipe:1",
     ]
 
@@ -187,7 +188,7 @@ def capture_cmd(args, encoder: str) -> list[str]:
         "-draw_mouse", "1",
         "-i", args.display,
         *(["-s", f"{args.out_width}x{args.out_height}"] if args.out_width else []),
-        *encoder_args(encoder, args.bitrate),
+        *encoder_args(encoder, args.bitrate, max(1, args.fps * 2)),
         "-f", "h264", "-",
     ]
 
@@ -294,17 +295,19 @@ def serve(args, encoder: str) -> None:
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((args.bind, args.port))
-    srv.listen(1)
+    srv.listen(16)
 
     kbd, ptr = open_input(not args.no_input)
 
     tls = None
+    allow_new = False
     if not args.no_tls:
         tls = security.server_context()
+        allow_new = configure_pairing(args.pairing)
         paired = security.load_authorized()
         print(f"TLS: on   cert sha256 {security.cert_fingerprint()[:32]}...")
         print(f"paired devices: {len(paired)}"
-              + ("  (next device to connect will be trusted)" if not paired else ""))
+              + ("  (run with --pairing to trust one new device)" if not paired else ""))
     else:
         print("TLS: OFF -- traffic is in the clear and anyone who can reach this "
               "port can drive the laptop")
@@ -313,23 +316,82 @@ def serve(args, encoder: str) -> None:
           f"@{args.fps} via {encoder} on {args.bind}:{args.port}")
     print("waiting for the Fold...\n")
 
+    # Handshakes are isolated from the single active stream. A peer that opens a
+    # TCP socket and stalls can consume one bounded worker, not the accept loop.
+    handshake_slots = threading.BoundedSemaphore(8)
+    active = threading.Lock()
     try:
         while True:
             raw, addr = srv.accept()
             # Nagle would coalesce small tail-of-frame writes into 40ms clumps,
             # which is a whole frame of latency added for no bandwidth benefit.
             raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            conn = handshake(raw, addr, tls, allow_new=not args.no_pairing)
-            if conn is None:
-                continue
-
-            print(f"[{time.strftime('%H:%M:%S')}] client {addr[0]}:{addr[1]} connected")
-            pump(conn, args, encoder, kbd, ptr)
-            print(f"[{time.strftime('%H:%M:%S')}] client gone\n")
+            dispatch_client(raw, addr, args=args, tls=tls,
+                            allow_new=allow_new, encoder=encoder,
+                            kbd=kbd, ptr=ptr, handshake_slots=handshake_slots,
+                            active=active)
     finally:
         for dev in (kbd, ptr):
             if dev is not None:
                 dev.close()
+
+
+def configure_pairing(requested: bool) -> bool:
+    """Translate --pairing into the same atomic one-use window as the CLI.
+
+    The returned legacy allow_new value is deliberately false: keeping that
+    flag true for the lifetime of the server would authorize every newcomer.
+    """
+    if requested:
+        security.open_pairing()
+    return False
+
+
+def dispatch_client(raw, addr, *, args, tls, allow_new, encoder, kbd, ptr,
+                    handshake_slots, active, handshake_fn=None, pump_fn=None):
+    """Start one bounded handshake worker and return its Thread.
+
+    At most one authorised client may own the encoder and uinput devices, but
+    unauthorised or stalled peers are checked concurrently so they cannot pin
+    the server's accept loop.
+    """
+    handshake_fn = handshake_fn or handshake
+    pump_fn = pump_fn or pump
+
+    if not handshake_slots.acquire(blocking=False):
+        raw.close()
+        return None
+
+    def worker():
+        conn = None
+        owns_stream = False
+        try:
+            conn = handshake_fn(raw, addr, tls, allow_new)
+        finally:
+            handshake_slots.release()
+
+        if conn is None:
+            return
+        try:
+            owns_stream = active.acquire(blocking=False)
+            if not owns_stream:
+                print(f"[{time.strftime('%H:%M:%S')}] authenticated client "
+                      f"{addr[0]} refused: another stream is active")
+                return
+            print(f"[{time.strftime('%H:%M:%S')}] client {addr[0]}:{addr[1]} connected")
+            pump_fn(conn, args, encoder, kbd, ptr)
+            print(f"[{time.strftime('%H:%M:%S')}] client gone\n")
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+            if owns_stream:
+                active.release()
+
+    thread = threading.Thread(target=worker, name=f"folddeck-{addr[0]}", daemon=True)
+    thread.start()
+    return thread
 
 
 def handshake(raw: socket.socket, addr, tls, allow_new: bool):
@@ -340,7 +402,7 @@ def handshake(raw: socket.socket, addr, tls, allow_new: bool):
     denial of service against an app whose whole job is to be available.
     """
     try:
-        raw.settimeout(10)
+        raw.settimeout(5)
         conn = tls.wrap_socket(raw, server_side=True) if tls else raw
 
         if tls is None:
@@ -617,7 +679,7 @@ def open_clock(display: str) -> subprocess.Popen | None:
     return None
 
 
-def main() -> int:
+def argument_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--bind", default="0.0.0.0",
@@ -639,10 +701,19 @@ def main() -> int:
                     help="video only; don't create the virtual keyboard")
     ap.add_argument("--no-tls", action="store_true",
                     help="disable TLS (debugging only -- traffic goes out in the clear)")
-    ap.add_argument("--no-pairing", action="store_true",
-                    help="refuse unknown devices instead of trusting the first one")
+    pairing = ap.add_mutually_exclusive_group()
+    pairing.add_argument("--pairing", action="store_true",
+                         help="temporarily trust one new device (off by default)")
+    pairing.add_argument("--no-pairing", action="store_false", dest="pairing",
+                         help=argparse.SUPPRESS)  # compatibility with old service files
+    ap.set_defaults(pairing=False)
     ap.add_argument("--probe", action="store_true", help="probe encoders + measure, then exit")
     ap.add_argument("--clock", action="store_true", help="open a ms clock window to film")
+    return ap
+
+
+def main() -> int:
+    ap = argument_parser()
     args = ap.parse_args()
 
     if not shutil.which("ffmpeg"):

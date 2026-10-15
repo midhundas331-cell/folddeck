@@ -55,18 +55,18 @@ class AddressView extends Panel {
 
         homeField = new Field(c, "Home Wi-Fi", "Fast. Only works on your own network.",
                 "192.168.1.10:5000",
-                current.homeHost == null ? "" : current.homeHost + ":" + current.homePort);
+                EndpointText.format(current.homeHost, current.homePort));
         body.addView(homeField.view, Ui.fillW(c, 18));
 
         awayField = new Field(c, "Tailnet", "Works anywhere, with Tailscale switched on.",
                 "100.100.10.20:5000",
-                current.awayHost == null ? "" : current.awayHost + ":" + current.awayPort);
+                EndpointText.format(current.awayHost, current.awayPort));
         body.addView(awayField.view, Ui.fillW(c, 14));
 
         body.addView(Ui.primaryButton(c, "Save", () -> {
             HostPort home = homeField.parse();
             HostPort away = awayField.parse();
-            if (home == null && away == null) return;   // nothing to save
+            if (homeField.invalid || awayField.invalid) return;
             listener.onSaved(new Endpoints(
                     home == null ? null : home.host, home == null ? 5000 : home.port,
                     away == null ? null : away.host, away == null ? 5000 : away.port));
@@ -109,6 +109,7 @@ class AddressView extends Panel {
         final LinearLayout view;
         private final EditText input;
         private final TextView warning;
+        private boolean invalid;
 
         Field(Context c, String label, String subtitle, String hint, String initial) {
             view = new LinearLayout(c);
@@ -124,7 +125,8 @@ class AddressView extends Panel {
             sub.setPadding(0, Ui.dp(c, 2), 0, 0);
             view.addView(sub);
 
-            input = Ui.input(c, initial, hint, InputType.TYPE_TEXT_VARIATION_URI);
+            input = Ui.input(c, initial, hint,
+                    InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
             input.setSelectAllOnFocus(true);
             view.addView(input, Ui.fillW(c, 12));
 
@@ -144,29 +146,38 @@ class AddressView extends Panel {
         /** null when the box is empty — an unused slot is allowed. */
         HostPort parse() {
             String text = input.getText().toString().trim();
-            if (text.isEmpty()) return null;
-            int colon = text.lastIndexOf(':');
-            String h = (colon > 0 ? text.substring(0, colon) : text).trim();
-            int p = 5000;
-            if (colon > 0) {
-                try {
-                    p = Integer.parseInt(text.substring(colon + 1).trim());
-                } catch (NumberFormatException ignored) {
-                    // Keep 5000. A typo in the port is better than refusing to
-                    // save the host, which is the part that is hard to retype.
-                }
+            try {
+                EndpointText.Value parsed = EndpointText.parse(text, 5000);
+                invalid = false;
+                return parsed == null ? null : new HostPort(parsed.host, parsed.port);
+            } catch (IllegalArgumentException e) {
+                invalid = true;
+                warning.setTextColor(Ui.ERR);
+                warning.setText(e.getMessage());
+                warning.setVisibility(VISIBLE);
+                return null;
             }
-            return h.isEmpty() ? null : new HostPort(h, p);
         }
 
         private void check(String text) {
-            int colon = text.lastIndexOf(':');
-            String h = (colon > 0 ? text.substring(0, colon) : text).trim();
+            EndpointText.Value parsed;
+            try {
+                parsed = EndpointText.parse(text, 5000);
+                invalid = false;
+            } catch (IllegalArgumentException e) {
+                invalid = true;
+                warning.setTextColor(Ui.ERR);
+                warning.setText(e.getMessage());
+                warning.setVisibility(VISIBLE);
+                return;
+            }
+            String h = parsed == null ? "" : parsed.host;
             boolean self = ownAddresses.contains(h)
                     || h.equals("localhost") || h.startsWith("127.");
             if (self && !h.isEmpty()) {
                 // 127.0.0.1 is legitimate with `adb reverse`, so this is a warning
                 // and never a block — it just has to be impossible to miss.
+                warning.setTextColor(Ui.WARN);
                 warning.setText(h.startsWith("127.") || h.equals("localhost")
                         ? "That is this phone itself. Only correct if you are using "
                                 + "adb reverse tcp:5000 tcp:5000 over USB."
@@ -174,6 +185,7 @@ class AddressView extends Panel {
                                 + "never leave the device. Use the laptop's address.");
                 warning.setVisibility(VISIBLE);
             } else {
+                warning.setTextColor(Ui.WARN);
                 warning.setVisibility(GONE);
             }
         }

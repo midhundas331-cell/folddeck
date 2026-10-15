@@ -22,10 +22,6 @@ import java.util.Locale;
 
 /**
  * The app: a lock, a home screen, and the deck the desktop streams onto.
- *
- *   adb shell am start -n io.folddeck.spike/.MainActivity \
- *       --es host 127.0.0.1 --ei port 5000
- *
  * Screens are sibling views in one FrameLayout rather than separate Activities,
  * because the deck must not be torn down and rebuilt every time you glance at
  * Settings — the SurfaceView would be destroyed with it, dropping the socket and
@@ -52,6 +48,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     private static final int SCREEN_HOME = 0, SCREEN_DECK = 1, SCREEN_SETTINGS = 2,
             SCREEN_GUIDE = 3, SCREEN_ADDRESS = 4, SCREEN_SHORTCUTS = 5;
+
+    static boolean preserveDraftDuringTheme(int targetScreen) {
+        return targetScreen == SCREEN_ADDRESS || targetScreen == SCREEN_SHORTCUTS;
+    }
 
     private FrameLayout root;
     private LinearLayout deck;
@@ -117,6 +117,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         Crash.install(getApplicationContext());
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
 
         // A crash from the previous run is worth more than getting straight back
         // to the stream: without adb on this phone there is no other way to see
@@ -171,13 +172,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         Ui.loadFonts(this);
         Ui.apply(prefs.getString(Prefs.THEME, Ui.DEFAULT_PALETTE));
 
-        // Three ways to get an address, in order of precedence:
-        //   1. intent extras   -- the adb path, scriptable
-        //   2. saved prefs     -- whatever was set last
-        //   3. the address screen, reachable from Home and from Settings
+        // Endpoints only come from this app's private preferences. Accepting host
+        // extras on the exported launcher Activity lets another app steer the
+        // TLS client (and its pairing credential) toward an attacker.
         endpoints = Endpoints.load(prefs);
-        if (getIntent().hasExtra("host")) host = getIntent().getStringExtra("host");
-        if (getIntent().hasExtra("port")) port = getIntent().getIntExtra("port", 5000);
         if (host == null) {
             host = prefs.getString(Prefs.HOST, null);
             port = prefs.getInt(Prefs.PORT, 5000);
@@ -290,8 +288,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         guideView = null;
         if (screen == SCREEN_SETTINGS) showSettings();
         else if (screen == SCREEN_GUIDE) showGuide();
-        else if (screen == SCREEN_ADDRESS) showAddressScreen();
-        else if (screen == SCREEN_SHORTCUTS) showShortcuts(shortcutsReturnTo);
+        // Address and shortcut editors may contain text/reorder drafts that are
+        // not persisted yet. Keep the live view until the user saves or leaves;
+        // rebuilding it for palette colours would silently discard their work.
+        else if (preserveDraftDuringTheme(screen)) showScreen(screen);
         else showScreen(screen);
     }
 
@@ -316,7 +316,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         hud = new TextView(this);
         hud.setTextColor(Ui.OK);
         hud.setBackgroundColor(0x99000000);
-        hud.setTypeface(Ui.FONT);
+        hud.setTypeface(Ui.MONO);
         hud.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         hud.setPadding(16, 16, 16, 16);
         // Not clickable: it used to hide on tap, which also removed the only way
@@ -684,6 +684,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     // Screens
     // ------------------------------------------------------------------ //
     private void showScreen(int which) {
+        int previous = screen;
         screen = which;
         home.setVisibility(which == SCREEN_HOME ? View.VISIBLE : View.GONE);
         if (settingsView != null) {
@@ -698,6 +699,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         if (shortcutsView != null) {
             shortcutsView.setVisibility(which == SCREEN_SHORTCUTS ? View.VISIBLE : View.GONE);
         }
+        View target = which == SCREEN_HOME ? home
+                : which == SCREEN_SETTINGS ? settingsView
+                : which == SCREEN_GUIDE ? guideView
+                : which == SCREEN_ADDRESS ? addressView
+                : which == SCREEN_SHORTCUTS ? shortcutsView : null;
+        if (target != null && previous != which) Motion.enter(target);
         hideSystemBars();
         updatePointerCapture();
     }
@@ -823,6 +830,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     @Override
+    @SuppressWarnings("deprecation")
     public void onBackPressed() {
         handleBack();
     }
@@ -835,8 +843,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
      *
      * The address the phone should use depends on which network it is standing
      * on, so it is measured at connect time rather than remembered. An address
-     * supplied by intent extras skips the probe: that path is scripted and its
-     * whole point is to go exactly where it was told.
+     * configured by the user is probed at connection time.
      */
     private void connect() {
         if (!endpoints.isConfigured() && host == null) {
@@ -845,12 +852,6 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         }
         wantStream = true;
         showScreen(SCREEN_DECK);
-
-        if (!endpoints.isConfigured()) {           // intent-supplied address only
-            home.setState(HomeView.PHASE_CONNECTING, host + ":" + port);
-            startStreamIfReady();
-            return;
-        }
 
         final int generation = ++streamGeneration;
         home.setState(HomeView.PHASE_FINDING, null);

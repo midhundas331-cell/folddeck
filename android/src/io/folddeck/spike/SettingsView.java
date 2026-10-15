@@ -175,6 +175,6 @@ class SettingsView extends Panel {
 
     /** Called by the activity whenever the address changes underneath us. */
     void setAddress(String host, int port) {
-        addressValue.setText(host == null ? "Not set" : host + ":" + port);
+        addressValue.setText(host == null ? "Not set" : EndpointText.format(host, port));
     }
 }
