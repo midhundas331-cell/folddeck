@@ -239,6 +239,31 @@ captures while a client is connected, so locking the phone also stops the laptop
 capturing its own screen. The app re-locks in `onStop()`, so leaving it in
 Recents is not the same as leaving it unlocked.
 
+## Audio (2026-10-17)
+
+The laptop's sound follows the deck. The phone sends `MSG_AUDIO` (type 6, u8
+on/off) after connecting when "Play laptop audio here" is on; `host/audio.py`
+then loads a PipeWire null sink `folddeck`, makes it the default, moves every
+playing stream onto it (so the speakers go quiet) and records its monitor with
+`parec` as raw 48 kHz s16le stereo. The PCM rides the video stream as an SEI NAL
+with UUID `FOLDDECK-AUDIO-1`, spliced at a start code like the theme, so there
+is no framing change. Unlike the theme it needs emulation-prevention bytes, which
+`AudioOut.unescape()` strips. The phone plays it on a low-latency `AudioTrack`
+with non-blocking writes: a full buffer drops audio instead of stalling video,
+which also bounds drift between the two sound clocks.
+
+Off, or on disconnect, the previous default sink comes back, streams move back
+and the module is unloaded. A leftover `folddeck` sink from a crash is removed
+at host start. Silence is not sent. Raw PCM is ~1.5 Mbps; Opus is the upgrade if
+that matters over Tailscale.
+
+Order of updates matters: an older host closes the connection on type 6, so
+update the **host first**. An older APK never sends type 6 and never gets audio.
+
+Verified 2026-10-17 on the Fold 7: the default sink switches to `folddeck` on
+connect, and a test tone played on the laptop shows up as a started 48 kHz
+`AudioTrack` owned by `io.folddeck.spike`. Not yet checked by ear for latency.
+
 ## Capture is lazy
 
 The host captures **only while a client is connected**. `pump()` spawns ffmpeg on
@@ -485,6 +510,7 @@ is actually installed.
 | 0.3 | 3 | Physical keyboard: hides the on-screen one, forwards evdev scancodes; full-height desktop + shortcut grid; drawn cursor removed |
 | 0.4 | 4 | Explicit pairing window, per-host phone credentials, TLS 1.3 only, DoS/input/parser hardening, bounded decoder scheduling, premium motion/type hierarchy and TrackPoint polish |
 | 0.5 | 5 | Video-first Fold geometry, open-portrait control shelf, cover monitor/input transition, floating depth hierarchy, personalization, dedicated trackpad, held source-safe buttons and themed scroll rail |
+| 0.6 | 6 | Laptop audio on the phone, trackpad tap-to-click, layout presets per posture, keyboard/trackpad size, keyboard look, shortcut bar placement, landscape-only cover, movable cover button |
 
 **0.2 needs a host from 2026-09-20 or later** — see the wire-format table under
 Input. Bump `versionCode` before building anything you plan to sideload.

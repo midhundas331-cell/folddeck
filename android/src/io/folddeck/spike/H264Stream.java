@@ -151,6 +151,7 @@ final class H264Stream implements Runnable {
     private boolean auHasVcl = false;
 
     private byte[] sps, pps;
+    private final AudioOut audio = new AudioOut();
 
     private long totalBytes = 0;
     private int decoded = 0, dropped = 0;
@@ -201,6 +202,15 @@ final class H264Stream implements Runnable {
         offer(new byte[]{5,
                 (byte) ((x >> 8) & 0xFF), (byte) (x & 0xFF),
                 (byte) ((y >> 8) & 0xFF), (byte) (y & 0xFF)});
+    }
+
+    /**
+     * MSG_AUDIO: ask the host to route the laptop's audio here (and silence its
+     * speakers), or to give it back. A host older than this closes on type 6,
+     * which is why the host is updated before the APK.
+     */
+    void sendAudio(boolean on) {
+        offer(new byte[]{6, (byte) (on ? 1 : 0)});
     }
 
     /** MSG_BUTTON: 1 = left, 2 = right, 3 = middle. */
@@ -287,6 +297,7 @@ final class H264Stream implements Runnable {
                 opened = true;
                 consecutiveFailures = 0;
                 outputTarget = new OutputTarget(socket, socket.getOutputStream());
+                if (Prefs.laptopAudio(prefs)) sendAudio(true);
                 report("streaming");
                 pump(socket.getInputStream());
             } catch (Throwable t) {
@@ -318,6 +329,7 @@ final class H264Stream implements Runnable {
                 closeQuietly(socket);
                 if (activeSocket == socket) activeSocket = null;
                 releaseCodec();
+                audio.release();
                 reset();
             }
             if (running) sleep(1000);   // retry loop, so the host can restart freely
@@ -429,6 +441,11 @@ final class H264Stream implements Runnable {
             if (palette != null) {
                 if (themeListener != null) themeListener.onTheme(palette);
                 return;   // ours, not the decoder's
+            }
+            byte[] pcm = AudioOut.pcmFrom(nal);
+            if (pcm != null) {
+                audio.play(pcm);
+                return;
             }
         }
         boolean isVcl = (type == 1 || type == 5);

@@ -49,6 +49,27 @@ final class Prefs {
     static final String TRACKPAD_SENS = "trackpad_sens";
     static final String TRACKPOINT_SENS = "trackpoint_sens";
     static final String CONTROL_SCALE = "control_scale";
+    static final String LAPTOP_AUDIO = "laptop_audio";
+    static final String TRACKPAD_TAP = "trackpad_tap";
+
+    /** What the deck shows below the desktop, per posture. */
+    static final int LAYOUT_BOTH = 0, LAYOUT_KEYBOARD = 1, LAYOUT_TRACKPAD = 2,
+            LAYOUT_MONITOR = 3;
+    static final int POSTURE_COVER = 0, POSTURE_LANDSCAPE = 1, POSTURE_PORTRAIT = 2;
+    static final String[] LAYOUT_KEYS = {"layout_cover", "layout_landscape", "layout_portrait"};
+    /** Where the desktop sits in spare space: 0 start, 1 centre, 2 end. */
+    static final String DESKTOP_ALIGN = "desktop_align";
+    static final String SHOW_SHORTCUTS = "show_shortcuts";
+    /** Shortcut bar right of the desktop instead of left, above instead of below. */
+    static final String SHORTCUTS_FLIP = "shortcuts_flip";
+    static final String TRACKPAD_SIZE = "trackpad_size";
+    static final float TRACKPAD_SIZE_MIN = 0.7f, TRACKPAD_SIZE_MAX = 1.5f;
+    static final String KEY_LABEL_SCALE = "key_label_scale";
+    static final float KEY_LABEL_MIN = 0.75f, KEY_LABEL_MAX = 1.35f;
+    static final String KEY_GAP_SCALE = "key_gap_scale";
+    static final float KEY_GAP_MIN = 0.5f, KEY_GAP_MAX = 3f;
+    static final String SHOW_TRACKPOINT = "show_trackpoint";
+    static final String SHOW_FN_ROW = "show_fn_row";
     /** Which side of the keyboard the dedicated trackpad sits on, per orientation. */
     static final String TRACKPAD_LEFT_LANDSCAPE = "trackpad_left_landscape";
     static final String TRACKPAD_LEFT_PORTRAIT = "trackpad_left_portrait";
@@ -75,7 +96,8 @@ final class Prefs {
     static final float MOUSE_SENS_MIN = 0.25f, MOUSE_SENS_MAX = 3f;
     static final float TRACKPAD_SENS_MIN = 0.5f, TRACKPAD_SENS_MAX = 2f;
     static final float TRACKPOINT_SENS_MIN = 0.5f, TRACKPOINT_SENS_MAX = 3f;
-    static final float CONTROL_SCALE_MIN = 0.85f, CONTROL_SCALE_MAX = 1.15f;
+    /** The control band's height, shown in Settings as "Keyboard height". */
+    static final float CONTROL_SCALE_MIN = 0.7f, CONTROL_SCALE_MAX = 1.4f;
 
     /**
      * Defaults are deliberate:
@@ -130,6 +152,68 @@ final class Prefs {
     static boolean trackpadLeft(SharedPreferences p, boolean landscape) {
         return landscape ? p.getBoolean(TRACKPAD_LEFT_LANDSCAPE, false)
                 : p.getBoolean(TRACKPAD_LEFT_PORTRAIT, true);
+    }
+
+    /** On: while connected the laptop's audio plays here and its speakers go quiet. */
+    static boolean laptopAudio(SharedPreferences p) {
+        return p.getBoolean(LAPTOP_AUDIO, true);
+    }
+
+    /** Defaults keep the old behaviour: the landscape deck follows the former
+     *  "Dedicated trackpad" switch, and portrait always had both. */
+    static int layout(SharedPreferences p, int posture) {
+        int fallback = posture == POSTURE_LANDSCAPE && !trackpadDeck(p)
+                ? LAYOUT_KEYBOARD : LAYOUT_BOTH;
+        int v = p.getInt(LAYOUT_KEYS[posture], fallback);
+        return v >= LAYOUT_BOTH && v <= LAYOUT_MONITOR ? v : fallback;
+    }
+
+    static boolean layoutHasKeyboard(int layout) {
+        return layout == LAYOUT_BOTH || layout == LAYOUT_KEYBOARD;
+    }
+
+    static boolean layoutHasTrackpad(int layout) {
+        return layout == LAYOUT_BOTH || layout == LAYOUT_TRACKPAD;
+    }
+
+    static int desktopAlign(SharedPreferences p) {
+        return Math.max(0, Math.min(2, p.getInt(DESKTOP_ALIGN, 1)));
+    }
+
+    static boolean showShortcuts(SharedPreferences p) {
+        return p.getBoolean(SHOW_SHORTCUTS, true);
+    }
+
+    static boolean shortcutsFlip(SharedPreferences p) {
+        return p.getBoolean(SHORTCUTS_FLIP, false);
+    }
+
+    static float trackpadSize(SharedPreferences p) {
+        return clamp(p.getFloat(TRACKPAD_SIZE, 1f), TRACKPAD_SIZE_MIN, TRACKPAD_SIZE_MAX);
+    }
+
+    static float keyLabelScale(SharedPreferences p) {
+        return clamp(p.getFloat(KEY_LABEL_SCALE, 1f), KEY_LABEL_MIN, KEY_LABEL_MAX);
+    }
+
+    static float keyGapScale(SharedPreferences p) {
+        return clamp(p.getFloat(KEY_GAP_SCALE, 1f), KEY_GAP_MIN, KEY_GAP_MAX);
+    }
+
+    static boolean showTrackpoint(SharedPreferences p) {
+        return p.getBoolean(SHOW_TRACKPOINT, true);
+    }
+
+    static boolean showFnRow(SharedPreferences p) {
+        return p.getBoolean(SHOW_FN_ROW, true);
+    }
+
+    static float clamp(float value, float min, float max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    static boolean trackpadTap(SharedPreferences p) {
+        return p.getBoolean(TRACKPAD_TAP, true);
     }
 
     static boolean naturalScroll(SharedPreferences p) {

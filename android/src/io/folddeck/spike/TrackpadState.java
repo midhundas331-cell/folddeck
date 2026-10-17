@@ -4,8 +4,14 @@ package io.folddeck.spike;
 final class TrackpadState {
     static final int NONE = 0, DOWN = 1, UP = -1;
 
+    /** A pad touch shorter than this that never moved is a click. */
+    static final long TAP_MS = 220;
+
     private final int[] contacts = new int[3];
     private float scrollRemainder;
+    private int padContacts, tapFingers;
+    private long tapDownAt;
+    private boolean tapSpoiled;
 
     int press(int button) {
         if (button < 1 || button > 2) return NONE;
@@ -26,7 +32,30 @@ final class TrackpadState {
             contacts[button] = 0;
         }
         resetScroll();
+        padContacts = 0;
+        tapSpoiled = true;
         return mask;
+    }
+
+    void padDown(long now) {
+        if (padContacts++ == 0) {
+            tapDownAt = now;
+            tapFingers = 0;
+            tapSpoiled = false;
+        }
+        tapFingers = Math.max(tapFingers, padContacts);
+    }
+
+    /** A pad finger travelled past touch slop: this gesture is movement, not a tap. */
+    void padMoved() {
+        tapSpoiled = true;
+    }
+
+    /** The button to click as the last pad finger lifts (1 left, 2 right), or 0. */
+    int padUp(long now, boolean buttonHeld) {
+        if (padContacts == 0 || --padContacts > 0) return 0;
+        if (tapSpoiled || buttonHeld || now - tapDownAt > TAP_MS) return 0;
+        return tapFingers >= 2 ? 2 : 1;
     }
 
     int scroll(float deltaPx, float pxPerNotch, boolean natural) {

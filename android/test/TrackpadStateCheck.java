@@ -34,6 +34,23 @@ public class TrackpadStateCheck {
                 "press stores resolved button before handedness change");
         check(state.release(pressedButton) == TrackpadState.UP,
                 "release of stored button cannot stick after handedness change");
+        TrackpadState tap = new TrackpadState();
+        tap.padDown(1000);
+        check(tap.padUp(1100, false) == 1, "quick still tap left-clicks");
+        tap.padDown(2000);
+        tap.padDown(2010);
+        check(tap.padUp(2090, false) == 0, "first finger up waits for the second");
+        check(tap.padUp(2100, false) == 2, "two-finger tap right-clicks");
+        tap.padDown(3000);
+        tap.padMoved();
+        check(tap.padUp(3050, false) == 0, "a moved finger is not a tap");
+        tap.padDown(4000);
+        check(tap.padUp(4000 + TrackpadState.TAP_MS + 1, false) == 0, "a long rest is not a tap");
+        tap.padDown(5000);
+        check(tap.padUp(5050, true) == 0, "no tap click while a button zone is held");
+        tap.padDown(6000);
+        tap.cancelMask();
+        check(tap.padUp(6050, false) == 0, "a cancelled gesture never clicks");
         System.out.println("TrackpadStateCheck ok");
     }
 }

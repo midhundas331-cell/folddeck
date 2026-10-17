@@ -351,6 +351,53 @@ final class Ui {
     }
 
     /**
+     * A segmented picker in the toggle's language: the chosen segment wears the
+     * selected fill and the accent, the rest the normal fill and a 1px line.
+     */
+    static View choice(Context c, String[] labels, int selected,
+                       java.util.function.IntConsumer onChange) {
+        LinearLayout row = new LinearLayout(c);
+        TextView[] cells = new TextView[labels.length];
+        Runnable paint = new Runnable() {
+            int chosen = selected;
+            @Override public void run() {
+                for (int i = 0; i < cells.length; i++) {
+                    boolean on = i == chosen;
+                    cells[i].setTextColor(on ? TEXT : TEXT_DIM);
+                    cells[i].setBackground(pressable(outlined(on ? SELECTED : SURFACE,
+                            on ? ACCENT : LINE, 1, c)));
+                    cells[i].setSelected(on);
+                }
+            }
+            void pick(int i) {
+                chosen = i;
+                run();
+                onChange.accept(i);
+            }
+            {
+                for (int i = 0; i < labels.length; i++) {
+                    final int index = i;
+                    TextView t = text(c, labels[i], T_LABEL, TEXT_DIM);
+                    t.setGravity(Gravity.CENTER);
+                    t.setPadding(dp(c, 10), 0, dp(c, 10), 0);
+                    t.setOnClickListener(v -> pick(index));
+                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT, dp(c, 32));
+                    if (i > 0) lp.leftMargin = dp(c, 4);
+                    cells[i] = t;
+                    row.addView(t, lp);
+                }
+            }
+        };
+        paint.run();
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.leftMargin = dp(c, 12);
+        row.setLayoutParams(lp);
+        return row;
+    }
+
+    /**
      * A square-knobbed slider over a 1px track, matching {@link #toggle}.
      *
      * Hand-drawn rather than a themed SeekBar for the same reason the toggle is:

@@ -23,7 +23,7 @@ final class TrackpadDeck extends View {
     private static final class Contact {
         int zone;
         int button;
-        float x, y;
+        float x, y, startX, startY;
     }
 
     private final SparseArray<Contact> contacts = new SparseArray<>();
@@ -36,6 +36,8 @@ final class TrackpadDeck extends View {
 
     private Listener listener;
     private boolean showScroll = true, leftHanded, naturalScroll = true, haptics = true;
+    private boolean tapToClick = true;
+    private final int touchSlop;
     private float sensitivity = 1f;
     private int pressedMask;
     private int motionPointer = -1;
@@ -43,6 +45,7 @@ final class TrackpadDeck extends View {
     TrackpadDeck(Context context) {
         super(context);
         density = getResources().getDisplayMetrics().density;
+        touchSlop = android.view.ViewConfiguration.get(context).getScaledTouchSlop();
         stroke.setStyle(Paint.Style.STROKE);
         stroke.setStrokeWidth(Math.max(1f, density));
         text.setTypeface(Ui.MONO_BOLD);
@@ -57,7 +60,8 @@ final class TrackpadDeck extends View {
     }
 
     void configure(boolean scrollVisible, boolean buttonsLeftHanded,
-                   boolean natural, float speed, boolean tactile) {
+                   boolean natural, float speed, boolean tactile, boolean tap) {
+        tapToClick = tap;
         if (showScroll != scrollVisible || leftHanded != buttonsLeftHanded) {
             cancelInput();
         }
@@ -175,8 +179,8 @@ final class TrackpadDeck extends View {
 
     private void begin(MotionEvent event, int index) {
         Contact contact = new Contact();
-        contact.x = event.getX(index);
-        contact.y = event.getY(index);
+        contact.x = contact.startX = event.getX(index);
+        contact.y = contact.startY = event.getY(index);
         contact.zone = zoneAt(contact.x, contact.y);
         int pointerId = event.getPointerId(index);
         contacts.put(pointerId, contact);
@@ -192,8 +196,9 @@ final class TrackpadDeck extends View {
             invalidate();
         } else if (contact.zone == ZONE_SCROLL) {
             state.resetScroll();
-        } else if (motionPointer == -1) {
-            motionPointer = pointerId;
+        } else {
+            state.padDown(event.getEventTime());
+            if (motionPointer == -1) motionPointer = pointerId;
         }
     }
 
@@ -202,6 +207,10 @@ final class TrackpadDeck extends View {
             Contact contact = contacts.get(event.getPointerId(i));
             if (contact == null) continue;
             float x = event.getX(i), y = event.getY(i);
+            if (contact.zone == ZONE_PAD
+                    && Math.hypot(x - contact.startX, y - contact.startY) > touchSlop) {
+                state.padMoved();
+            }
             if (contact.zone == ZONE_PAD && event.getPointerId(i) == motionPointer
                     && listener != null) {
                 listener.onMove(state.sensitivity(x - contact.x, sensitivity),
@@ -228,8 +237,14 @@ final class TrackpadDeck extends View {
             }
         } else if (contact.zone == ZONE_SCROLL) {
             state.resetScroll();
-        } else if (pointerId == motionPointer) {
-            motionPointer = nextPadPointer();
+        } else {
+            if (pointerId == motionPointer) motionPointer = nextPadPointer();
+            int click = state.padUp(android.os.SystemClock.uptimeMillis(), pressedMask != 0);
+            if (click != 0 && tapToClick && listener != null) {
+                listener.onButton(click, true);
+                listener.onButton(click, false);
+                if (haptics) performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+            }
         }
     }
 

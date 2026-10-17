@@ -24,6 +24,7 @@ class SettingsView extends Panel {
         void onChangePin();
         void onForgetHostCertificate();
         void onControlsChanged();
+        void onAudioChanged(boolean on);
         void onHudChanged();
         void onEditShortcuts();
     }
@@ -51,6 +52,16 @@ class SettingsView extends Panel {
                 null),
                 Ui.fillW(c, 8));
 
+        body.addView(Ui.row(c, "Play laptop audio here",
+                "While connected the laptop's sound comes out of the phone and its "
+                        + "speakers go quiet",
+                Ui.toggle(c, Prefs.laptopAudio(prefs), on -> {
+                    Prefs.putBool(prefs, Prefs.LAPTOP_AUDIO, on);
+                    listener.onAudioChanged(on);
+                }),
+                null),
+                Ui.fillW(c, 8));
+
         // -------- appearance ------------------------------------------------ //
         body.addView(Ui.sectionLabel(c, "Appearance"));
 
@@ -73,19 +84,6 @@ class SettingsView extends Panel {
                 null),
                 Ui.fillW(c, 6));
 
-        TextView scaleValue = Ui.text(c, percentLabel(Prefs.controlScale(prefs)),
-                Ui.T_LABEL, Ui.ACCENT);
-        LinearLayout scale = sliderRow(c, "Control size", scaleValue,
-                Ui.slider(c, Prefs.controlScale(prefs), Prefs.CONTROL_SCALE_MIN,
-                        Prefs.CONTROL_SCALE_MAX, value -> {
-                            scaleValue.setText(percentLabel(value));
-                            prefs.edit().putFloat(Prefs.CONTROL_SCALE, value).apply();
-                            listener.onControlsChanged();
-                        }));
-        body.addView(Ui.row(c, "Control size",
-                "Compact gives the desktop more room; large makes controls easier to hit",
-                scale, null), Ui.fillW(c, 6));
-
         body.addView(Ui.row(c, "Tactile key feedback",
                 "A quiet vibration on keyboard and trackpad-button presses",
                 Ui.toggle(c, Prefs.keyboardHaptics(prefs), on -> {
@@ -107,13 +105,133 @@ class SettingsView extends Panel {
                 null, listener::onEditShortcuts),
                 Ui.fillW(c, 8));
 
+        // -------- layout ---------------------------------------------------- //
+        body.addView(Ui.sectionLabel(c, "Layout"));
+
+        String[] presets = {"Keys + pad", "Keys", "Pad", "Monitor"};
+        String[][] postures = {
+                {"Cover screen", "What the corner button reveals; Monitor hides the button"},
+                {"Unfolded, landscape", "Below the desktop when the phone is open sideways"},
+                {"Unfolded, portrait", "Below the desktop when the phone is open upright"}};
+        for (int i = 0; i < postures.length; i++) {
+            final int posture = i;
+            body.addView(Ui.row(c, postures[i][0], postures[i][1],
+                    Ui.choice(c, presets, Prefs.layout(prefs, posture), v -> {
+                        prefs.edit().putInt(Prefs.LAYOUT_KEYS[posture], v).apply();
+                        listener.onControlsChanged();
+                    }), null), Ui.fillW(c, 6));
+        }
+
+        body.addView(Ui.row(c, "Desktop position",
+                "Where the desktop sits when there is spare room around it",
+                Ui.choice(c, new String[]{"Start", "Centre", "End"}, Prefs.desktopAlign(prefs),
+                        v -> {
+                            prefs.edit().putInt(Prefs.DESKTOP_ALIGN, v).apply();
+                            listener.onControlsChanged();
+                        }), null), Ui.fillW(c, 6));
+
+        TextView scaleValue = Ui.text(c, percentLabel(Prefs.controlScale(prefs)),
+                Ui.T_LABEL, Ui.ACCENT);
+        LinearLayout scale = sliderRow(c, "Keyboard height", scaleValue,
+                Ui.slider(c, Prefs.controlScale(prefs), Prefs.CONTROL_SCALE_MIN,
+                        Prefs.CONTROL_SCALE_MAX, value -> {
+                            scaleValue.setText(percentLabel(value));
+                            prefs.edit().putFloat(Prefs.CONTROL_SCALE, value).apply();
+                            listener.onControlsChanged();
+                        }));
+        body.addView(Ui.row(c, "Keyboard height",
+                "How much of the screen the keyboard and trackpad take from the desktop",
+                scale, null), Ui.fillW(c, 6));
+
+        TextView padSizeValue = Ui.text(c, percentLabel(Prefs.trackpadSize(prefs)),
+                Ui.T_LABEL, Ui.ACCENT);
+        LinearLayout padSize = sliderRow(c, "Trackpad size", padSizeValue,
+                Ui.slider(c, Prefs.trackpadSize(prefs), Prefs.TRACKPAD_SIZE_MIN,
+                        Prefs.TRACKPAD_SIZE_MAX, value -> {
+                            padSizeValue.setText(percentLabel(value));
+                            prefs.edit().putFloat(Prefs.TRACKPAD_SIZE, value).apply();
+                            listener.onControlsChanged();
+                        }));
+        body.addView(Ui.row(c, "Trackpad size",
+                "Width beside the keyboard, or height below it", padSize, null),
+                Ui.fillW(c, 6));
+
+        body.addView(Ui.row(c, "Trackpad on the left in landscape",
+                "Off puts it to the right of the keyboard",
+                Ui.toggle(c, Prefs.trackpadLeft(prefs, true), on -> {
+                    Prefs.putBool(prefs, Prefs.TRACKPAD_LEFT_LANDSCAPE, on);
+                    listener.onControlsChanged();
+                }), null), Ui.fillW(c, 6));
+
+        body.addView(Ui.row(c, "Trackpad on the left in portrait",
+                "Off puts it to the right of the shortcut shelf",
+                Ui.toggle(c, Prefs.trackpadLeft(prefs, false), on -> {
+                    Prefs.putBool(prefs, Prefs.TRACKPAD_LEFT_PORTRAIT, on);
+                    listener.onControlsChanged();
+                }), null), Ui.fillW(c, 6));
+
+        body.addView(Ui.row(c, "Shortcut bar",
+                "The Omarchy shortcut buttons beside or below the desktop",
+                Ui.toggle(c, Prefs.showShortcuts(prefs), on -> {
+                    Prefs.putBool(prefs, Prefs.SHOW_SHORTCUTS, on);
+                    listener.onControlsChanged();
+                }), null), Ui.fillW(c, 6));
+
+        body.addView(Ui.row(c, "Shortcut bar on the other side",
+                "Right of the desktop instead of left, above it instead of below",
+                Ui.toggle(c, Prefs.shortcutsFlip(prefs), on -> {
+                    Prefs.putBool(prefs, Prefs.SHORTCUTS_FLIP, on);
+                    listener.onControlsChanged();
+                }), null), Ui.fillW(c, 8));
+
+        // -------- keyboard -------------------------------------------------- //
+        body.addView(Ui.sectionLabel(c, "Keyboard"));
+
+        TextView labelValue = Ui.text(c, percentLabel(Prefs.keyLabelScale(prefs)),
+                Ui.T_LABEL, Ui.ACCENT);
+        LinearLayout labelSize = sliderRow(c, "Key label size", labelValue,
+                Ui.slider(c, Prefs.keyLabelScale(prefs), Prefs.KEY_LABEL_MIN,
+                        Prefs.KEY_LABEL_MAX, value -> {
+                            labelValue.setText(percentLabel(value));
+                            prefs.edit().putFloat(Prefs.KEY_LABEL_SCALE, value).apply();
+                            listener.onControlsChanged();
+                        }));
+        body.addView(Ui.row(c, "Key label size", "The letters printed on the keys",
+                labelSize, null), Ui.fillW(c, 6));
+
+        TextView gapValue = Ui.text(c, percentLabel(Prefs.keyGapScale(prefs)),
+                Ui.T_LABEL, Ui.ACCENT);
+        LinearLayout gapSize = sliderRow(c, "Key spacing", gapValue,
+                Ui.slider(c, Prefs.keyGapScale(prefs), Prefs.KEY_GAP_MIN,
+                        Prefs.KEY_GAP_MAX, value -> {
+                            gapValue.setText(percentLabel(value));
+                            prefs.edit().putFloat(Prefs.KEY_GAP_SCALE, value).apply();
+                            listener.onControlsChanged();
+                        }));
+        body.addView(Ui.row(c, "Key spacing", "The gap between keys",
+                gapSize, null), Ui.fillW(c, 6));
+
+        body.addView(Ui.row(c, "TrackPoint",
+                "The red pointing nub between G, H and B",
+                Ui.toggle(c, Prefs.showTrackpoint(prefs), on -> {
+                    Prefs.putBool(prefs, Prefs.SHOW_TRACKPOINT, on);
+                    listener.onControlsChanged();
+                }), null), Ui.fillW(c, 6));
+
+        body.addView(Ui.row(c, "Function key row",
+                "Esc, F1-F12, PrtSc, Ins and Del; off gives the other rows more height",
+                Ui.toggle(c, Prefs.showFnRow(prefs), on -> {
+                    Prefs.putBool(prefs, Prefs.SHOW_FN_ROW, on);
+                    listener.onControlsChanged();
+                }), null), Ui.fillW(c, 8));
+
         // -------- touch and trackpad ---------------------------------------- //
         body.addView(Ui.sectionLabel(c, "Touch & trackpad"));
 
-        body.addView(Ui.row(c, "Dedicated trackpad",
-                "Resizes the keyboard and adds held left/right buttons",
-                Ui.toggle(c, Prefs.trackpadDeck(prefs), on -> {
-                    Prefs.putBool(prefs, Prefs.TRACKPAD_DECK, on);
+        body.addView(Ui.row(c, "Tap to click",
+                "Tap the dedicated pad to left-click; tap with two fingers to right-click",
+                Ui.toggle(c, Prefs.trackpadTap(prefs), on -> {
+                    Prefs.putBool(prefs, Prefs.TRACKPAD_TAP, on);
                     listener.onControlsChanged();
                 }), null), Ui.fillW(c, 6));
 
@@ -138,19 +256,6 @@ class SettingsView extends Panel {
                     listener.onControlsChanged();
                 }), null), Ui.fillW(c, 6));
 
-        body.addView(Ui.row(c, "Trackpad on the left in landscape",
-                "Off puts it to the right of the keyboard",
-                Ui.toggle(c, Prefs.trackpadLeft(prefs, true), on -> {
-                    Prefs.putBool(prefs, Prefs.TRACKPAD_LEFT_LANDSCAPE, on);
-                    listener.onControlsChanged();
-                }), null), Ui.fillW(c, 6));
-
-        body.addView(Ui.row(c, "Trackpad on the left in portrait",
-                "Off puts it to the right of the shortcut shelf",
-                Ui.toggle(c, Prefs.trackpadLeft(prefs, false), on -> {
-                    Prefs.putBool(prefs, Prefs.TRACKPAD_LEFT_PORTRAIT, on);
-                    listener.onControlsChanged();
-                }), null), Ui.fillW(c, 6));
 
         body.addView(Ui.row(c, "Touchscreen trackpad mode",
                 "Finger movement over the desktop is relative instead of direct",

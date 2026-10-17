@@ -18,8 +18,14 @@ repaints within a second, without dropping the stream.
   chords, latching modifiers, auto-repeat, Fn layer for media keys, a working
   TrackPoint.
 - **Pointer** — tap/long-press/double-tap-drag/two-finger scroll, direct or
-  relative mode, plus an optional dedicated trackpad with true held left/right
-  buttons and a theme-matched scroll rail.
+  relative mode, plus an optional dedicated trackpad with tap-to-click
+  (two fingers = right click), true held left/right buttons and a
+  theme-matched scroll rail.
+- **Laptop audio** — while connected the laptop's sound plays on the phone and
+  its speakers go quiet; disconnecting gives it back. Switchable in Settings.
+- **Customisable deck** — per-posture layout presets (keys + pad, keys, pad,
+  monitor), desktop position, keyboard height, trackpad size and side, key label
+  size and spacing, TrackPoint and F-key row on/off, shortcut bar on/off and side.
 - **Bluetooth mouse** — pair one with the phone and it drives the laptop's own
   cursor, kept inside the desktop image at any fold or rotation.
   Left+right together hands it back to the phone, and takes it back again.
@@ -52,7 +58,8 @@ repaints within a second, without dropping the stream.
 ## Requirements
 
 **Laptop (host):** Linux, Python 3.10+, `python-cryptography`, access to
-`/dev/uinput`, and `wf-recorder` (Wayland/wlroots) or `ffmpeg` (X11). See
+`/dev/uinput`, and `wf-recorder` (Wayland/wlroots) or `ffmpeg` (X11). Audio
+needs PipeWire or PulseAudio with `pactl` and `parec`. See
 [`host/requirements.txt`](host/requirements.txt). Theme sync reads Omarchy's
 `~/.local/state/omarchy/current/theme/colors.toml`; on other desktops the app keeps
 its default palette.
@@ -107,6 +114,7 @@ losing its PIN and pairing.
 host/stream.py        capture -> H.264 -> TLS socket; theme sync; input back to uinput
 host/security.py      certificate, pairing, token pinning
 host/uinput.py        virtual keyboard and pointer via ioctl, no dependencies
+host/audio.py         laptop audio -> phone: PipeWire null sink + parec
 host/test_*.py        parser, input, TLS and theme-sync tests
 android/src/          the app (plain Java, no AndroidX)
 android/build.sh      aapt2 + javac + d8 + apksigner

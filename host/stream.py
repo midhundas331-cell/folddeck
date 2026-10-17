@@ -31,6 +31,7 @@ import sys
 import threading
 import time
 
+import audio
 import security
 
 # --------------------------------------------------------------------------- #
@@ -298,6 +299,10 @@ def serve(args, encoder: str) -> None:
     srv.listen(16)
 
     kbd, ptr = open_input(not args.no_input)
+    try:
+        audio.remove_stale_sink()   # a crashed run must not leave the laptop silent
+    except (OSError, subprocess.SubprocessError):
+        pass
 
     tls = None
     allow_new = False
@@ -460,7 +465,7 @@ def handshake(raw: socket.socket, addr, tls, allow_new: bool):
 _reject_count = 0
 _reject_token = ""
 
-MSG_KEY, MSG_PTR_ABS, MSG_BUTTON, MSG_SCROLL, MSG_PTR_ABS16 = 1, 2, 3, 4, 5
+MSG_KEY, MSG_PTR_ABS, MSG_BUTTON, MSG_SCROLL, MSG_PTR_ABS16, MSG_AUDIO = 1, 2, 3, 4, 5, 6
 
 # type -> payload length. Every message is fixed-size for its type, so no length
 # field is needed; an unknown type means the stream has desynced.
@@ -468,12 +473,14 @@ MSG_KEY, MSG_PTR_ABS, MSG_BUTTON, MSG_SCROLL, MSG_PTR_ABS16 = 1, 2, 3, 4, 5
 # MSG_PTR_ABS (permille) is still parsed so an older APK keeps working, but
 # every current client sends MSG_PTR_ABS16 instead: permille is 1.9px per step
 # across a 1920px desktop, which a finger never noticed and a mouse does.
+# MSG_AUDIO (u8 on/off) is the phone opting in to laptop audio; an older APK
+# never sends it, so it never receives audio NALs its decoder would choke on.
 _PAYLOAD_LEN = {MSG_KEY: 3, MSG_PTR_ABS: 4, MSG_BUTTON: 2, MSG_SCROLL: 4,
-                MSG_PTR_ABS16: 4}
+                MSG_PTR_ABS16: 4, MSG_AUDIO: 1}
 
 
 def input_reader(conn: socket.socket, kbd, ptr, stop: threading.Event,
-                 io_lock: threading.Lock) -> None:
+                 io_lock: threading.Lock, on_audio=None) -> None:
     """Read input events off the same socket and inject them.
 
     TCP is full-duplex, so the reverse channel costs no extra connection. Input
@@ -534,6 +541,8 @@ def input_reader(conn: socket.socket, kbd, ptr, stop: threading.Event,
                 elif typ == MSG_SCROLL and ptr is not None:
                     dv, dh = struct.unpack(">hh", payload)
                     ptr.scroll(dv, dh)
+                elif typ == MSG_AUDIO and on_audio is not None:
+                    on_audio(payload[0] == 1)
     except (OSError, ConnectionResetError, ssl.SSLError, ValueError):
         pass
     finally:
@@ -596,7 +605,10 @@ def pump(conn: socket.socket, args, encoder: str, kbd, ptr) -> None:
 
     stop = threading.Event()
     io_lock = threading.Lock()
-    reader = threading.Thread(target=input_reader, args=(conn, kbd, ptr, stop, io_lock),
+    route = audio.AudioRoute()
+    pending_audio = b""
+    reader = threading.Thread(target=input_reader,
+                              args=(conn, kbd, ptr, stop, io_lock, route.set),
                               name="input", daemon=True)
     reader.start()
 
@@ -617,6 +629,15 @@ def pump(conn: socket.socket, args, encoder: str, kbd, ptr) -> None:
                 spliced = splice_nal(chunk, pending_theme, first=total == 0)
                 if spliced is not None:
                     chunk, pending_theme = spliced, b""
+            # Audio waits for a start code like the theme does; anything recorded
+            # meanwhile joins the same NAL.
+            pending_audio += route.take()
+            if pending_audio and total:
+                spliced = splice_nal(chunk, audio.audio_nal(pending_audio), first=False)
+                if spliced is not None:
+                    chunk, pending_audio = spliced, b""
+                elif len(pending_audio) > audio.MAX_BUFFERED:
+                    pending_audio = b""
 
             with io_lock:
                 conn.sendall(chunk)
@@ -640,6 +661,7 @@ def pump(conn: socket.socket, args, encoder: str, kbd, ptr) -> None:
         proc.wait()
         conn.close()
         reader.join(timeout=1)
+        route.stop()
 
 
 def open_clock(display: str) -> subprocess.Popen | None:

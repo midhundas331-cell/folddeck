@@ -64,12 +64,25 @@ public class DeckLayoutCheck {
         check(empty.baseDp == 0f && empty.lidDp == 875f, "no controls gives video all space");
         check(DeckLayout.isCover(411), "closed display uses cover presentation");
         check(!DeckLayout.isCover(600), "open display does not use cover presentation");
-        check(DeckLayout.requiresDedicatedTrackpad(600, false),
-                "open portrait always provides the requested trackpad");
-        check(!DeckLayout.requiresDedicatedTrackpad(600, true),
-                "open landscape keeps trackpad preference optional");
-        check(!DeckLayout.requiresDedicatedTrackpad(411, false),
-                "cover trackpad remains controlled by monitor/input mode");
+        check(Prefs.layoutHasKeyboard(Prefs.LAYOUT_BOTH)
+                        && Prefs.layoutHasTrackpad(Prefs.LAYOUT_BOTH),
+                "keys + pad preset shows both");
+        check(!Prefs.layoutHasKeyboard(Prefs.LAYOUT_TRACKPAD)
+                        && !Prefs.layoutHasTrackpad(Prefs.LAYOUT_KEYBOARD),
+                "single-control presets show one");
+        check(!Prefs.layoutHasKeyboard(Prefs.LAYOUT_MONITOR)
+                        && !Prefs.layoutHasTrackpad(Prefs.LAYOUT_MONITOR),
+                "monitor preset shows neither");
+
+        DeckLayout.Result normal = DeckLayout.solve(
+                971, 875, 600, true, true, false, 16f / 9f, 1f);
+        DeckLayout.Result tall = DeckLayout.solve(
+                971, 875, 600, true, true, false, 16f / 9f, 1.4f);
+        DeckLayout.Result low = DeckLayout.solve(
+                971, 875, 600, true, true, false, 16f / 9f, 0.7f);
+        check(tall.baseDp > normal.baseDp * 1.2f && low.baseDp < normal.baseDp * 0.8f,
+                "keyboard height stretches beyond the old 0.85..1.15 band");
+        check(tall.lidDp >= 80f, "a tall keyboard still leaves the desktop visible");
 
         DeckLayout.Result scaled = DeckLayout.solve(
                 971, 875, 600, true, true, false, 16f / 9f, 1.15f);

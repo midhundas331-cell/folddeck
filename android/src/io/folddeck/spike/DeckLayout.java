@@ -36,6 +36,9 @@ final class DeckLayout {
         widthDp = Math.max(widthDp, 1f);
         heightDp = Math.max(heightDp, 1f);
         aspect = aspect > 0.2f ? aspect : 16f / 9f;
+        // Inside 0.85..1.15 the scale shapes each posture's proportions; beyond
+        // that the user's keyboard-height choice simply stretches the band.
+        float userScale = clamp(controlScale, 0.7f, 1.4f);
         controlScale = clamp(controlScale, 0.85f, 1.15f);
 
         if (!keyboard && !trackpad) {
@@ -83,16 +86,13 @@ final class DeckLayout {
             base = clamp(heightDp * fraction * controlScale, 220f, heightDp * 0.65f);
         }
 
+        base *= userScale / controlScale;
         base = Math.min(base, Math.max(0f, heightDp - 80f));
         return new Result(heightDp - base, base, sideBySide, videoFirst, portraitConsole);
     }
 
     static boolean isCover(int smallestWidthDp) {
         return smallestWidthDp < 600;
-    }
-
-    static boolean requiresDedicatedTrackpad(int smallestWidthDp, boolean landscape) {
-        return smallestWidthDp >= 600 && !landscape;
     }
 
     private static float clamp(float value, float min, float max) {

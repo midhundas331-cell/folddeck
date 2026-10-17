@@ -79,6 +79,8 @@ class KeyboardView extends View {
     private float gap, rowHeight;
     private boolean fnActive;
     private boolean haptics = true;
+    private float labelScale = 1f, gapScale = 1f;
+    private boolean showNub = true, showFnRow = true;
 
     // TrackPoint nub, positioned between G, H and B once the layout is known.
     private float nubX, nubY, nubRadius;
@@ -103,6 +105,20 @@ class KeyboardView extends View {
         haptics = enabled;
     }
 
+    /** Legend size, gap between caps, the TrackPoint and the Esc/F-key row. */
+    void setLook(float labels, float gaps, boolean nub, boolean fnRow) {
+        if (labels == labelScale && gaps == gapScale && nub == showNub && fnRow == showFnRow) {
+            return;
+        }
+        releaseAll();   // a held key may be about to disappear
+        labelScale = labels;
+        gapScale = gaps;
+        showNub = nub;
+        showFnRow = fnRow;
+        onSizeChanged(getWidth(), getHeight(), getWidth(), getHeight());
+        invalidate();
+    }
+
     // ------------------------------------------------------------------ //
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
@@ -110,15 +126,17 @@ class KeyboardView extends View {
         caps.clear();
         if (w <= 0 || h <= 0) return;
 
-        gap = Math.max(2f, w * 0.0022f);
-        int rows = Ev.LAYOUT.length;
+        gap = Math.max(2f, w * 0.0022f * gapScale);
+        Ev.Key[][] layout = showFnRow ? Ev.LAYOUT
+                : java.util.Arrays.copyOfRange(Ev.LAYOUT, 1, Ev.LAYOUT.length);
+        int rows = layout.length;
         rowHeight = (h - gap * (rows + 1)) / rows;
         // Every row sums to ROW_UNITS, so one unit width serves all rows and the
         // columns line up the way they do on a real board.
         float unit = (w - gap * (Ev.ROW_UNITS + 1)) / Ev.ROW_UNITS;
 
         float y = gap;
-        for (Ev.Key[] row : Ev.LAYOUT) {
+        for (Ev.Key[] row : layout) {
             float x = gap;
             for (Ev.Key key : row) {
                 float kw = key.width * unit + gap * (key.width - 1);
@@ -131,14 +149,14 @@ class KeyboardView extends View {
             y += rowHeight + gap;
         }
 
-        text.setTextSize(rowHeight * 0.30f);
+        text.setTextSize(rowHeight * 0.30f * labelScale);
         placeNub();
 
     }
 
     private void placeNub() {
         Cap g = findCap(Ev.G), h = findCap(Ev.H), b = findCap(Ev.B);
-        if (g == null || h == null || b == null) {
+        if (!showNub || g == null || h == null || b == null) {
             nubRadius = 0f;
             return;
         }
@@ -182,7 +200,7 @@ class KeyboardView extends View {
         float cx = cap.rect.centerX(), cy = cap.rect.centerY();
 
         // Long labels ("PrtSc", "Shift") need to shrink to fit their cap.
-        float size = rowHeight * (key.label.length() > 3 ? 0.22f : 0.30f);
+        float size = rowHeight * labelScale * (key.label.length() > 3 ? 0.22f : 0.30f);
         text.setTextSize(size);
 
         if (key.shift != null) {
@@ -198,7 +216,7 @@ class KeyboardView extends View {
             text.setColor(ink);
             canvas.drawText(key.label, cx, cy - rowHeight * 0.04f, text);
             // Fn-layer legend in the accent, lit when Fn is engaged.
-            text.setTextSize(rowHeight * 0.22f);
+            text.setTextSize(rowHeight * 0.22f * labelScale);
             text.setColor(pressed ? Ui.BG : fnActive ? Ui.ACCENT : Ui.TEXT_FAINT);
             canvas.drawText(key.fnLabel, cx, cy + rowHeight * 0.30f, text);
             return;

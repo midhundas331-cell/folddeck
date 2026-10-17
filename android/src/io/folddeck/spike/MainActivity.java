@@ -419,7 +419,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     vh = paneH;
                     vw = Math.round(vh * aspect);
                 }
-                int x = (paneW - vw) / 2, y = (paneH - vh) / 2;
+                int align = Prefs.desktopAlign(prefs);
+                int x = (paneW - vw) * align / 2, y = (paneH - vh) * align / 2;
                 place(surfaceView, x, y, vw, vh);
                 pointerPad.setVideoBounds(x, y, x + vw, y + vh);
                 lid.setScreen(lid.getPaddingLeft() + x, lid.getPaddingTop() + y,
@@ -431,6 +432,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             boolean column = paneW - (int) (paneH * aspect) >= Ui.dp(this, ShortcutBar.COLUMN_MIN_DP);
             int x, y, vw, vh;
             boolean grid = false;
+            boolean flip = Prefs.shortcutsFlip(prefs);
             if (column) {
                 // Full height, flush right, always: no bars above or below the
                 // desktop. The deck takes whatever width is left and, when that is
@@ -443,10 +445,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 boolean chassis = lid.getPaddingTop() > 0;
                 vh = paneH - (chassis ? 2 : controlsShown ? 1 : 0) * line;
                 vw = (int) (vh * aspect);
-                x = paneW - vw;
+                x = flip ? 0 : paneW - vw;
                 y = chassis ? line : 0;
-                place(shortcutBar, 0, 0, x, paneH);
-                shortcutBar.setCompact(x < Ui.dp(this, ShortcutBar.COMPACT_BELOW_DP));
+                int deckW = paneW - vw;
+                place(shortcutBar, flip ? vw : 0, 0, deckW, paneH);
+                shortcutBar.setCompact(deckW < Ui.dp(this, ShortcutBar.COMPACT_BELOW_DP));
             } else {
                 int band = paneH - (int) (paneW / aspect);
                 // With the keyboard gone the band is no longer capped: the deck
@@ -458,16 +461,25 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 vw = (int) (vh * aspect);
                 // Any height the cap leaves over is split around the pair.
                 int top = (paneH - vh - band) / 2;
-                x = coverInputMode ? paneW - vw : (paneW - vw) / 2;
-                y = coverInputMode ? 0 : top;
-                place(shortcutBar, 0, y + vh, paneW, band);
+                x = coverInputMode ? paneW - vw : (paneW - vw) * Prefs.desktopAlign(prefs) / 2;
+                int pairTop = coverInputMode ? 0 : top;
+                y = flip ? pairTop + band : pairTop;
+                place(shortcutBar, 0, flip ? pairTop : y + vh, paneW, band);
                 shortcutBar.setCompact(false);
             }
             place(surfaceView, x, y, vw, vh);
             shortcutBar.setVertical(column || grid);
             // A deck side lying on the app frame stays open; see ShortcutBar.edges.
             boolean flushLeft = lid.getPaddingLeft() == 0, flushTop = lid.getPaddingTop() == 0;
-            shortcutBar.setEdges(!flushLeft, !(column && flushTop), !(!column && lid.getPaddingRight() == 0), controlsShown);
+            boolean flushRight = lid.getPaddingRight() == 0;
+            if (!flip) {
+                shortcutBar.setEdges(!flushLeft, !(column && flushTop),
+                        !(!column && flushRight), controlsShown);
+            } else if (column) {
+                shortcutBar.setEdges(true, !flushTop, !flushRight, controlsShown);
+            } else {
+                shortcutBar.setEdges(!flushLeft, !flushTop, !flushRight, true);
+            }
             pointerPad.setVideoBounds(x, y, x + vw, y + vh);
             // videoPane sits inside the lid's content box, so its origin in lid
             // coordinates is the lid's top-left padding.
@@ -489,6 +501,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             }
         });
         keyboard.setHaptics(Prefs.keyboardHaptics(prefs));
+        keyboard.setLook(Prefs.keyLabelScale(prefs), Prefs.keyGapScale(prefs),
+                Prefs.showTrackpoint(prefs), Prefs.showFnRow(prefs));
 
         trackpadDeck = new TrackpadDeck(this);
         trackpadDeck.setListener(new TrackpadDeck.Listener() {
@@ -607,11 +621,19 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 && cfg.orientation == Configuration.ORIENTATION_LANDSCAPE;
     }
 
+    private int posture() {
+        Configuration cfg = getResources().getConfiguration();
+        if (DeckLayout.isCover(cfg.smallestScreenWidthDp)) return Prefs.POSTURE_COVER;
+        return cfg.orientation == Configuration.ORIENTATION_LANDSCAPE
+                ? Prefs.POSTURE_LANDSCAPE : Prefs.POSTURE_PORTRAIT;
+    }
+
     private void configureTrackpad() {
         if (trackpadDeck == null) return;
         trackpadDeck.configure(Prefs.trackpadScroll(prefs),
                 Prefs.trackpadLeftHanded(prefs), Prefs.naturalScroll(prefs),
-                Prefs.trackpadSens(prefs), Prefs.keyboardHaptics(prefs));
+                Prefs.trackpadSens(prefs), Prefs.keyboardHaptics(prefs),
+                Prefs.trackpadTap(prefs));
     }
 
     private void applyCustomization() {
@@ -622,7 +644,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         if (shortcutBar != null && pointerPad != null) {
             shortcutBar.setTrackpadMode(pointerPad.getMode() == PointerPad.MODE_TRACKPAD);
         }
-        if (keyboard != null) keyboard.setHaptics(Prefs.keyboardHaptics(prefs));
+        if (keyboard != null) {
+            keyboard.setHaptics(Prefs.keyboardHaptics(prefs));
+            keyboard.setLook(Prefs.keyLabelScale(prefs), Prefs.keyGapScale(prefs),
+                    Prefs.showTrackpoint(prefs), Prefs.showFnRow(prefs));
+        }
         configureTrackpad();
         applyPosture(false);
         updatePointerCapture();
@@ -660,11 +686,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         coverInputMode = coverConsole.controlsExpanded();
 
         boolean preferredKeyboard = !(Prefs.hideKeyboard(prefs) && hardKeyboard());
-        keyboardShown = coverDisplay ? coverInputMode : preferredKeyboard;
-        boolean trackpadShown = coverDisplay ? coverInputMode
-                : Prefs.trackpadDeck(prefs)
-                || DeckLayout.requiresDedicatedTrackpad(cfg.smallestScreenWidthDp,
-                        cfg.orientation == Configuration.ORIENTATION_LANDSCAPE);
+        int preset = Prefs.layout(prefs, posture());
+        // On the cover the preset is what the corner button reveals.
+        boolean revealed = !coverDisplay || coverInputMode;
+        keyboardShown = revealed && Prefs.layoutHasKeyboard(preset)
+                && (coverDisplay || preferredKeyboard);
+        boolean trackpadShown = revealed && Prefs.layoutHasTrackpad(preset);
         controlsShown = keyboardShown || trackpadShown;
 
         if (!keyboardShown) keyboard.releaseAll();
@@ -692,12 +719,14 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 : availablePx;
         int basePx = Math.max(0, availablePx - lidPx);
 
-        boolean dockShortcuts = solved.portraitConsole && controlsShown;
+        boolean showShortcuts = Prefs.showShortcuts(prefs);
+        boolean dockShortcuts = solved.portraitConsole && controlsShown && showShortcuts;
         setShortcutDocked(dockShortcuts);
         shortcutBar.setTwoRows(dockShortcuts);
         shortcutBar.setCompact(false);
         shortcutBar.setEdges(true, true, true, true);
-        shortcutBar.setVisibility(coverDisplay && !coverInputMode ? View.GONE : View.VISIBLE);
+        shortcutBar.setVisibility(!showShortcuts || coverDisplay && !coverInputMode
+                ? View.GONE : View.VISIBLE);
 
         // Keep the old controls painted during the collapse while their base moves
         // away. Their input state was released above, and they become GONE at end.
@@ -707,7 +736,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             inputDeck.configure(visualControls && (keyboardShown || !controlsShown),
                     visualControls && (trackpadShown || !controlsShown),
                     solved.sideBySide, dockShortcuts,
-                    Prefs.trackpadLeft(prefs, totalW >= totalH));
+                    Prefs.trackpadLeft(prefs, totalW >= totalH), Prefs.trackpadSize(prefs));
         }
 
         if (animateCover) {
@@ -778,7 +807,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 if (!expanding) {
                     releaseDeckInput();
                     base.setVisibility(View.GONE);
-                    inputDeck.configure(false, false, false, false, false);
+                    inputDeck.configure(false, false, false, false, false, 1f);
                 } else {
                     inputDeck.setInputEnabled(true);
                 }
@@ -821,7 +850,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     private void updateCoverToggle() {
         if (coverToggle == null) return;
-        coverToggle.setVisibility(coverDisplay && screen == SCREEN_DECK ? View.VISIBLE : View.GONE);
+        // A monitor-only cover preset has nothing to reveal.
+        coverToggle.setVisibility(coverDisplay && screen == SCREEN_DECK
+                && Prefs.layout(prefs, Prefs.POSTURE_COVER) != Prefs.LAYOUT_MONITOR
+                ? View.VISIBLE : View.GONE);
         boolean expanded = coverConsole.controlsExpanded();
         coverToggle.setText(expanded ? "□" : "⌨");
         coverToggle.setContentDescription(expanded
@@ -1014,6 +1046,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 @Override public void onChangePin()     { changePin(); }
                 @Override public void onForgetHostCertificate() { forgetHostCertificate(); }
                 @Override public void onControlsChanged()       { applyCustomization(); }
+                @Override public void onAudioChanged(boolean on) {
+                    if (stream != null) stream.sendAudio(on);
+                }
                 @Override public void onEditShortcuts() { showShortcuts(SCREEN_SETTINGS); }
                 @Override public void onHudChanged() {
                     hud.setVisibility(Prefs.showHud(prefs) ? View.VISIBLE : View.GONE);

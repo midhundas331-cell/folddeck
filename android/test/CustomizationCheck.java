@@ -14,8 +14,8 @@ public class CustomizationCheck {
         near(Prefs.clampTrackpadSens(0.1f), 0.5f, "trackpad minimum");
         near(Prefs.clampTrackpadSens(3f), 2f, "trackpad maximum");
         near(Prefs.clampTrackpointSens(9f), 3f, "TrackPoint maximum");
-        near(Prefs.clampControlScale(0.1f), 0.85f, "control scale minimum");
-        near(Prefs.clampControlScale(2f), 1.15f, "control scale maximum");
+        near(Prefs.clampControlScale(0.1f), 0.7f, "keyboard height minimum");
+        near(Prefs.clampControlScale(2f), 1.4f, "keyboard height maximum");
         check(Prefs.clampPointerMode(-1) == PointerPad.MODE_DIRECT, "bad pointer mode falls back");
         check(Prefs.clampPointerMode(PointerPad.MODE_TRACKPAD) == PointerPad.MODE_TRACKPAD,
                 "trackpad pointer mode persists");
