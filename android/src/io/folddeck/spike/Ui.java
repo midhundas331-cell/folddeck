@@ -25,11 +25,11 @@ import java.util.Map;
  * instead of assembled — a card in Settings and a card on Home are the same
  * object, so they cannot drift apart as either screen is edited.
  *
- * The look is Omarchy's shell, copied rather than approximated: square corners
- * (Omarchy's Style.cornerRadius follows Hyprland's rounding, which is 0), 1px
- * borders at 40% foreground, fills at 4% / 8% / 18% / 22% foreground for
- * normal / hover / selected / pressed. System sans carries product copy while
- * JetBrains Mono is reserved for machine data, keys and terminal-like controls.
+ * The look keeps Omarchy's restrained palette, borders and dense control rhythm,
+ * then adds a small product-level depth system: 7dp floating-card corners,
+ * top-lit gradients, and 3/6/9dp elevation tiers. Keyboard caps remain machined
+ * and square. System sans carries product copy while JetBrains Mono is reserved
+ * for machine data, keys and terminal-like controls.
  *
  * There is no res/values/styles.xml because there is no Gradle: aapt2 is only
  * fed the launcher icon, and everything else is built in Java. This class is
@@ -108,6 +108,10 @@ final class Ui {
     // Type scale. Four sizes, not fifteen — the restraint is the point.
     static final float T_TITLE = 19f, T_BODY = 15f,
             T_LABEL = 13f, T_MICRO = 11f;
+    static final float FLOAT_LOW_DP = 3f;
+    static final float FLOAT_MID_DP = 6f;
+    static final float FLOAT_ELEVATION_DP = 9f;
+    static final float FLOAT_RADIUS_DP = 7f;
 
     /** Product copy is quiet system sans; machine data and controls retain Omarchy mono. */
     static Typeface FONT = Typeface.create("sans-serif", Typeface.NORMAL);
@@ -142,6 +146,26 @@ final class Ui {
         GradientDrawable d = square(fill);
         d.setStroke(Math.max(1, dp(c, widthDp)), stroke);
         return d;
+    }
+
+    /** A restrained raised surface: light catches the top, shadow leaves below. */
+    static GradientDrawable floatingPanel(int fill, int stroke, float widthDp, Context c) {
+        GradientDrawable d = new GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{mix(fill, TEXT, 0.09f), fill, mix(fill, BG, 0.22f)});
+        d.setShape(GradientDrawable.RECTANGLE);
+        d.setCornerRadius(dp(c, FLOAT_RADIUS_DP));
+        d.setStroke(Math.max(1, dp(c, widthDp)), stroke);
+        return d;
+    }
+
+    static <T extends View> T elevate(T view, Context c) {
+        return elevate(view, c, FLOAT_ELEVATION_DP);
+    }
+
+    static <T extends View> T elevate(T view, Context c, float elevationDp) {
+        view.setElevation(dp(c, elevationDp));
+        return view;
     }
 
     /**
@@ -201,7 +225,8 @@ final class Ui {
         b.setTypeface(FONT_BOLD);
         b.setGravity(Gravity.CENTER);
         b.setPadding(dp(c, 24), dp(c, 16), dp(c, 24), dp(c, 16));
-        b.setBackground(pressable(outlined(mix(BG, ACCENT, 0.08f), ACCENT, 2, c)));
+        b.setBackground(pressable(floatingPanel(mix(BG, ACCENT, 0.10f), ACCENT, 2, c)));
+        elevate(b, c);
         b.setClickable(true);
         Motion.press(b);
         b.setOnClickListener(v -> onClick.run());
@@ -213,7 +238,8 @@ final class Ui {
         TextView b = text(c, label, T_BODY, TEXT);
         b.setGravity(Gravity.CENTER);
         b.setPadding(dp(c, 24), dp(c, 16), dp(c, 24), dp(c, 16));
-        b.setBackground(pressable(outlined(SURFACE, LINE, 1, c)));
+        b.setBackground(pressable(floatingPanel(SURFACE, LINE, 1, c)));
+        elevate(b, c);
         b.setClickable(true);
         Motion.press(b);
         b.setOnClickListener(v -> onClick.run());
@@ -238,8 +264,9 @@ final class Ui {
         r.setOrientation(LinearLayout.HORIZONTAL);
         r.setGravity(Gravity.CENTER_VERTICAL);
         r.setPadding(dp(c, 16), dp(c, 14), dp(c, 16), dp(c, 14));
-        GradientDrawable shape = outlined(SURFACE, LINE, 1, c);
+        GradientDrawable shape = floatingPanel(SURFACE, LINE, 1, c);
         r.setBackground(onClick == null ? shape : pressable(shape));
+        elevate(r, c, FLOAT_LOW_DP);
         if (onClick != null) {
             r.setClickable(true);
             Motion.press(r);
@@ -257,7 +284,12 @@ final class Ui {
         // weight 1 so the accessory is pinned right however long the text runs.
         r.addView(stack, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        if (accessory != null) r.addView(accessory);
+        if (accessory != null) {
+            if (accessory.getContentDescription() == null) {
+                accessory.setContentDescription(titleText);
+            }
+            r.addView(accessory);
+        }
         return r;
     }
 
@@ -273,11 +305,24 @@ final class Ui {
 
             {
                 setClickable(true);
+                setFocusable(true);
+                setStateDescription(checked ? "On" : "Off");
                 setOnClickListener(x -> {
                     checked = !checked;
+                    setStateDescription(checked ? "On" : "Off");
                     invalidate();
                     onChange.accept(checked);
                 });
+            }
+
+            @Override
+            @SuppressWarnings("deprecation")
+            public void onInitializeAccessibilityNodeInfo(
+                    android.view.accessibility.AccessibilityNodeInfo info) {
+                super.onInitializeAccessibilityNodeInfo(info);
+                info.setClassName(android.widget.Switch.class.getName());
+                info.setCheckable(true);
+                info.setChecked(checked);
             }
 
             @Override
@@ -319,6 +364,24 @@ final class Ui {
             final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
             float frac = (value - min) / (max - min);
 
+            {
+                setFocusable(true);
+                setClickable(true);
+                updateState();
+            }
+
+            void setFraction(float value) {
+                frac = Math.max(0f, Math.min(1f, value));
+                updateState();
+                invalidate();
+                onChange.accept(min + frac * (max - min));
+            }
+
+            void updateState() {
+                float current = min + frac * (max - min);
+                setStateDescription(String.format(java.util.Locale.US, "%.2f", current));
+            }
+
             @Override
             public boolean onTouchEvent(android.view.MotionEvent e) {
                 switch (e.getActionMasked()) {
@@ -330,9 +393,7 @@ final class Ui {
                         // never quite reach min or max.
                         float knob = getHeight() * 0.55f;
                         float span = Math.max(getWidth() - knob, 1);
-                        frac = Math.max(0f, Math.min(1f, (e.getX() - knob / 2f) / span));
-                        invalidate();
-                        onChange.accept(min + frac * (max - min));
+                        setFraction((e.getX() - knob / 2f) / span);
                         // Claim the gesture or the scrolling settings list
                         // steals it the moment the finger drifts vertically.
                         getParent().requestDisallowInterceptTouchEvent(
@@ -341,6 +402,39 @@ final class Ui {
                     default:
                         return super.onTouchEvent(e);
                 }
+            }
+
+            @Override
+            @SuppressWarnings("deprecation")
+            public void onInitializeAccessibilityNodeInfo(
+                    android.view.accessibility.AccessibilityNodeInfo info) {
+                super.onInitializeAccessibilityNodeInfo(info);
+                info.setClassName(android.widget.SeekBar.class.getName());
+                info.setRangeInfo(android.view.accessibility.AccessibilityNodeInfo.RangeInfo.obtain(
+                        android.view.accessibility.AccessibilityNodeInfo.RangeInfo.RANGE_TYPE_FLOAT,
+                        min, max, min + frac * (max - min)));
+                info.addAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD);
+                info.addAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD);
+                info.addAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS);
+            }
+
+            @Override
+            public boolean performAccessibilityAction(int action, android.os.Bundle args) {
+                int setProgress = android.view.accessibility.AccessibilityNodeInfo
+                        .AccessibilityAction.ACTION_SET_PROGRESS.getId();
+                if (action == setProgress && args != null) {
+                    float requested = args.getFloat(android.view.accessibility
+                            .AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE);
+                    setFraction((requested - min) / (max - min));
+                    return true;
+                }
+                if (action == android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                        || action == android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD) {
+                    setFraction(frac + (action == android.view.accessibility
+                            .AccessibilityNodeInfo.ACTION_SCROLL_FORWARD ? 0.1f : -0.1f));
+                    return true;
+                }
+                return super.performAccessibilityAction(action, args);
             }
 
             @Override

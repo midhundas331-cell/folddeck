@@ -18,7 +18,8 @@ repaints within a second, without dropping the stream.
   chords, latching modifiers, auto-repeat, Fn layer for media keys, a working
   TrackPoint.
 - **Pointer** — tap/long-press/double-tap-drag/two-finger scroll, direct or
-  trackpad mode.
+  relative mode, plus an optional dedicated trackpad with true held left/right
+  buttons and a theme-matched scroll rail.
 - **Bluetooth mouse** — pair one with the phone and it drives the laptop's own
   cursor, kept inside the desktop image at any fold or rotation.
   Left+right together hands it back to the phone, and takes it back again.
@@ -27,13 +28,20 @@ repaints within a second, without dropping the stream.
   on-screen one steps aside: the desktop goes full width and the shortcuts fill
   the rest. Keys go across as raw scancodes, Super included on Samsung phones;
   a built-in trackpad works like the mouse.
-- **Laptop posture** — unfolded in landscape, the lid and keyboard split exactly on
-  the crease with a hinge between them.
+- **Laptop posture** — unfolded in landscape, the full-width 16:9 desktop is sized
+  first; shortcuts, keyboard and optional trackpad adapt into the remaining band.
+- **Open portrait console** — the uncropped desktop takes the maximum full-width
+  area at the top; a half-width trackpad and two-row synchronized shortcut shelf
+  sit above a compact keyboard.
+- **Cover monitor mode** — the closed Fold opens as a clean full-monitor viewer.
+  A floating corner control reveals or hides the keyboard and trackpad with a
+  fast spring transition while the desktop moves into the opposite corner.
 - **Shortcut deck** — the space the 16:9 desktop leaves over holds Omarchy
   shortcuts (Hyprland-style chords like `SUPER+SHIFT+B`): a swipeable row upright, a
   two-column scrolling deck in landscape. Add, edit, delete, and long-press-drag to
   rearrange.
-- **Omarchy look** — machined square controls, a restrained sans/JetBrains Mono
+- **Omarchy look** — raised gradient tabs, restrained depth, machined controls,
+  a restrained sans/JetBrains Mono
   type system, tactile motion, an accent frame, and the live laptop palette.
 - **Security** — TLS 1.3 with the host certificate pinned on the phone and the
   phone's token pinned on the host; PIN + fingerprint app lock; locking the phone
@@ -102,7 +110,7 @@ host/uinput.py        virtual keyboard and pointer via ioctl, no dependencies
 host/test_*.py        parser, input, TLS and theme-sync tests
 android/src/          the app (plain Java, no AndroidX)
 android/build.sh      aapt2 + javac + d8 + apksigner
-android/test/         JVM check for the shortcut parser
+android/test/         pure-JVM checks for layout, input, TLS, motion and parsing
 docs/NOTES.md         design notes, measurements, and every gotcha hit so far
 PLAN.md               the original (larger, unbuilt) architecture
 ```

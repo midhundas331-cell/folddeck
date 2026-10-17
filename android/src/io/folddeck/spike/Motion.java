@@ -19,6 +19,8 @@ final class Motion {
     static final long PRESS_MS = 75;
     static final long RELEASE_MS = 170;
     static final long ENTER_MS = 220;
+    static final long COVER_SWITCH_MS = 260;
+    static final float COVER_OVERSHOOT = 1.18f;
 
     private static final Map<View, WeakReference<Animator>> PRESS_ANIMATORS =
             Collections.synchronizedMap(new WeakHashMap<>());
@@ -63,8 +65,11 @@ final class Motion {
                 view.getScaleX(), target);
         ObjectAnimator sy = ObjectAnimator.ofFloat(view, View.SCALE_Y,
                 view.getScaleY(), target);
+        float targetZ = target < 1f ? -Ui.dp(view.getContext(), 2) : 0f;
+        ObjectAnimator z = ObjectAnimator.ofFloat(view, View.TRANSLATION_Z,
+                view.getTranslationZ(), targetZ);
         AnimatorSet set = new AnimatorSet();
-        set.playTogether(sx, sy);
+        set.playTogether(sx, sy, z);
         set.setDuration(duration);
         set.setInterpolator(interpolator);
         PRESS_ANIMATORS.put(view, new WeakReference<>(set));

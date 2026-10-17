@@ -68,7 +68,8 @@ class HomeView extends FrameLayout {
         status.setOrientation(LinearLayout.HORIZONTAL);
         status.setGravity(Gravity.CENTER_VERTICAL);
         status.setPadding(Ui.dp(c, 16), Ui.dp(c, 16), Ui.dp(c, 16), Ui.dp(c, 16));
-        status.setBackground(Ui.outlined(Ui.SURFACE, Ui.LINE, 1, c));
+        status.setBackground(Ui.floatingPanel(Ui.SURFACE, Ui.LINE, 1, c));
+        Ui.elevate(status, c, Ui.FLOAT_LOW_DP);
 
         stateDot = new View(c);
         stateDot.setBackground(Ui.square(Ui.TEXT_FAINT));
@@ -132,7 +133,8 @@ class HomeView extends FrameLayout {
         LinearLayout card = new LinearLayout(c);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(Ui.dp(c, 16), Ui.dp(c, 14), Ui.dp(c, 16), Ui.dp(c, 14));
-        card.setBackground(Ui.pressable(Ui.outlined(Ui.SURFACE, Ui.LINE, 1, c)));
+        card.setBackground(Ui.pressable(Ui.floatingPanel(Ui.SURFACE, Ui.LINE, 1, c)));
+        Ui.elevate(card, c, Ui.FLOAT_MID_DP);
         card.setClickable(true);
         Motion.press(card);
         card.setOnClickListener(v -> listener.onEditAddress());

@@ -60,11 +60,15 @@ class PointerPad extends View {
     static final int MODE_DIRECT = 0, MODE_TRACKPAD = 1;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final TouchGestureGate touchGate = new TouchGestureGate();
 
     /** Bounds of the actual video image, which is letterboxed inside this view. */
     private final Rect video = new Rect();
 
     private Listener listener;
+    private final PointerButtons buttons = new PointerButtons((button, down) -> {
+        if (listener != null) listener.onButton(button, down);
+    });
     private int mode = MODE_DIRECT;
 
     private float downX, downY, lastX, lastY;
@@ -98,8 +102,8 @@ class PointerPad extends View {
             if (moved || scrolling) return;
             longPressFired = true;
             performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-            send(BTN_RIGHT, true);
-            send(BTN_RIGHT, false);
+            buttons.set(PointerButtons.SOURCE_TOUCH, BTN_RIGHT, true);
+            buttons.set(PointerButtons.SOURCE_TOUCH, BTN_RIGHT, false);
         }
     };
 
@@ -121,9 +125,16 @@ class PointerPad extends View {
         return mode;
     }
 
+    void setMode(int value) {
+        int next = Prefs.clampPointerMode(value);
+        if (mode == next) return;
+        cancelTouchGesture();
+        mode = next;
+    }
+
     /** Flip between DIRECT and TRACKPAD; returns the new mode. */
     int toggleMode() {
-        mode = (mode == MODE_DIRECT) ? MODE_TRACKPAD : MODE_DIRECT;
+        setMode(mode == MODE_DIRECT ? MODE_TRACKPAD : MODE_DIRECT);
         return mode;
     }
 
@@ -137,6 +148,11 @@ class PointerPad extends View {
     // ------------------------------------------------------------------ //
     @Override
     public boolean onTouchEvent(MotionEvent event) {
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            touchGate.onDown();
+        } else if (touchGate.ignoreNonDown()) {
+            return true;
+        }
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN: {
                 downX = lastX = event.getX();
@@ -152,7 +168,7 @@ class PointerPad extends View {
                 lastTapAt = now;
 
                 if (mode == MODE_DIRECT) moveTo(downX, downY);
-                if (dragging) send(BTN_LEFT, true);
+                if (dragging) buttons.set(PointerButtons.SOURCE_TOUCH, BTN_LEFT, true);
                 else handler.postDelayed(longPress, LONG_PRESS_MS);
                 return true;
             }
@@ -162,7 +178,7 @@ class PointerPad extends View {
                 scrolling = true;
                 handler.removeCallbacks(longPress);
                 if (dragging) {
-                    send(BTN_LEFT, false);
+                    buttons.set(PointerButtons.SOURCE_TOUCH, BTN_LEFT, false);
                     dragging = false;
                 }
                 // A scroll must not count as the first half of a double-tap, or
@@ -237,11 +253,11 @@ class PointerPad extends View {
             case MotionEvent.ACTION_UP: {
                 handler.removeCallbacks(longPress);
                 if (dragging) {
-                    send(BTN_LEFT, false);
+                    buttons.set(PointerButtons.SOURCE_TOUCH, BTN_LEFT, false);
                     dragging = false;
                 } else if (!moved && !longPressFired && !scrolling) {
-                    send(BTN_LEFT, true);
-                    send(BTN_LEFT, false);
+                    buttons.set(PointerButtons.SOURCE_TOUCH, BTN_LEFT, true);
+                    buttons.set(PointerButtons.SOURCE_TOUCH, BTN_LEFT, false);
                     performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
                 }
                 scrolling = false;
@@ -249,8 +265,7 @@ class PointerPad extends View {
             }
 
             case MotionEvent.ACTION_CANCEL: {
-                handler.removeCallbacks(longPress);
-                releaseAll();
+                cancelTouchGesture();
                 return true;
             }
 
@@ -325,16 +340,30 @@ class PointerPad extends View {
         return sum / e.getPointerCount();
     }
 
-    private void send(int button, boolean down) {
-        if (listener != null) listener.onButton(button, down);
+    void buttonFrom(int source, int button, boolean down) {
+        buttons.set(source, button, down);
+    }
+
+    void releaseButtonSource(int source) {
+        buttons.releaseSource(source);
+    }
+
+    private void cancelTouchGesture() {
+        handler.removeCallbacks(longPress);
+        buttons.releaseSource(PointerButtons.SOURCE_TOUCH);
+        dragging = scrolling = moved = longPressFired = false;
+        touchGate.cancelSequence();
     }
 
     void releaseAll() {
+        handler.removeCallbacks(longPress);
+        touchGate.cancelSequence();
         if (dragging) {
-            send(BTN_LEFT, false);
+            buttons.set(PointerButtons.SOURCE_TOUCH, BTN_LEFT, false);
             dragging = false;
         }
         releaseHeld();
+        buttons.releaseAll();
         scrolling = moved = longPressFired = false;
     }
 
@@ -409,11 +438,11 @@ class PointerPad extends View {
         switch (buttonAction(held, btn, down)) {
             case ACT_PRESS:
                 held |= 1 << btn;
-                send(btn, true);
+                buttons.set(PointerButtons.SOURCE_MOUSE, btn, true);
                 break;
             case ACT_RELEASE:
                 held &= ~(1 << btn);
-                send(btn, false);
+                buttons.set(PointerButtons.SOURCE_MOUSE, btn, false);
                 break;
             case ACT_CHORD:
                 // The first of the two buttons has already been pressed on the
@@ -450,7 +479,9 @@ class PointerPad extends View {
 
     private void releaseHeld() {
         for (int btn = BTN_LEFT; btn <= BTN_MIDDLE; btn++) {
-            if ((held & (1 << btn)) != 0) send(btn, false);
+            if ((held & (1 << btn)) != 0) {
+                buttons.set(PointerButtons.SOURCE_MOUSE, btn, false);
+            }
         }
         held = 0;
     }

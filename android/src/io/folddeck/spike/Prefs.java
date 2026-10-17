@@ -39,6 +39,16 @@ final class Prefs {
     static final String LAPTOP_LAYOUT = "laptop_layout";
     static final String SHOW_HUD = "show_hud";
     static final String HIDE_KEYBOARD = "hide_keyboard";
+    static final String TRACKPAD_DECK = "trackpad_deck";
+    static final String TRACKPAD_SCROLL = "trackpad_scroll";
+    static final String TRACKPAD_LEFT_HANDED = "trackpad_left_handed";
+    static final String NATURAL_SCROLL = "natural_scroll";
+    static final String KEYBOARD_HAPTICS = "keyboard_haptics";
+    static final String MOUSE_AUTO_CAPTURE = "mouse_auto_capture";
+    static final String POINTER_MODE = "pointer_mode";
+    static final String TRACKPAD_SENS = "trackpad_sens";
+    static final String TRACKPOINT_SENS = "trackpoint_sens";
+    static final String CONTROL_SCALE = "control_scale";
 
     /** The laptop's Omarchy palette as last sent down the stream, "key=#rrggbb" lines. */
     static final String THEME = "theme";
@@ -57,6 +67,9 @@ final class Prefs {
      */
     static final String MOUSE_SENS = "mouse_sens";
     static final float MOUSE_SENS_MIN = 0.25f, MOUSE_SENS_MAX = 3f;
+    static final float TRACKPAD_SENS_MIN = 0.5f, TRACKPAD_SENS_MAX = 2f;
+    static final float TRACKPOINT_SENS_MIN = 0.5f, TRACKPOINT_SENS_MAX = 3f;
+    static final float CONTROL_SCALE_MIN = 0.85f, CONTROL_SCALE_MAX = 1.15f;
 
     /**
      * Defaults are deliberate:
@@ -92,6 +105,62 @@ final class Prefs {
 
     static float mouseSens(SharedPreferences p) {
         return p.getFloat(MOUSE_SENS, 1f);
+    }
+
+    static boolean trackpadDeck(SharedPreferences p) {
+        return p.getBoolean(TRACKPAD_DECK, false);
+    }
+
+    static boolean trackpadScroll(SharedPreferences p) {
+        return p.getBoolean(TRACKPAD_SCROLL, true);
+    }
+
+    static boolean trackpadLeftHanded(SharedPreferences p) {
+        return p.getBoolean(TRACKPAD_LEFT_HANDED, false);
+    }
+
+    static boolean naturalScroll(SharedPreferences p) {
+        return p.getBoolean(NATURAL_SCROLL, true);
+    }
+
+    static boolean keyboardHaptics(SharedPreferences p) {
+        return p.getBoolean(KEYBOARD_HAPTICS, true);
+    }
+
+    static boolean mouseAutoCapture(SharedPreferences p) {
+        return p.getBoolean(MOUSE_AUTO_CAPTURE, true);
+    }
+
+    static int pointerMode(SharedPreferences p) {
+        return clampPointerMode(p.getInt(POINTER_MODE, PointerPad.MODE_DIRECT));
+    }
+
+    static float trackpadSens(SharedPreferences p) {
+        return clampTrackpadSens(p.getFloat(TRACKPAD_SENS, 1f));
+    }
+
+    static float trackpointSens(SharedPreferences p) {
+        return clampTrackpointSens(p.getFloat(TRACKPOINT_SENS, 1f));
+    }
+
+    static float controlScale(SharedPreferences p) {
+        return clampControlScale(p.getFloat(CONTROL_SCALE, 1f));
+    }
+
+    static float clampTrackpadSens(float value) {
+        return Math.max(TRACKPAD_SENS_MIN, Math.min(TRACKPAD_SENS_MAX, value));
+    }
+
+    static float clampTrackpointSens(float value) {
+        return Math.max(TRACKPOINT_SENS_MIN, Math.min(TRACKPOINT_SENS_MAX, value));
+    }
+
+    static float clampControlScale(float value) {
+        return Math.max(CONTROL_SCALE_MIN, Math.min(CONTROL_SCALE_MAX, value));
+    }
+
+    static int clampPointerMode(int value) {
+        return value == PointerPad.MODE_TRACKPAD ? value : PointerPad.MODE_DIRECT;
     }
 
     static void putBool(SharedPreferences p, String key, boolean value) {

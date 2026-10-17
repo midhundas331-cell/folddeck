@@ -14,12 +14,10 @@ import android.widget.FrameLayout;
  * The laptop the Fold turns into when it is unfolded and held in landscape.
  *
  * The inner display's crease runs horizontally across the middle in that
- * posture, and there is nothing to be done about it — so it is made into the
- * hinge rather than fought. {@link Hinge} is drawn centred on the fold line,
- * with the video lid above it and the keyboard base below, each getting exactly
- * half of what is left. Equal halves are not an aesthetic choice: it is the only
- * split that puts the seam between the two panes *on* the crease instead of a
- * centimetre off it, where it reads as a mistake.
+ * posture, and there is nothing to be done about it — so it is made into a
+ * deliberate hinge rather than fought. {@link DeckLayout} sizes the lid for a
+ * full-width 16:9 desktop first, then gives the remaining measured band to the
+ * keyboard and optional trackpad.
  *
  * The bezels come from the same reasoning. A 16:9 desktop letterboxed into a
  * near-square pane leaves black bars whatever you do; framing them deliberately
@@ -34,7 +32,6 @@ final class Chassis {
     private Chassis() { }
 
     static final int BEZEL_SIDE_DP = 16;
-    static final int LID_TOP_DP = 14, LID_BOTTOM_DP = 10;
     static final int BASE_TOP_DP = 10, BASE_BOTTOM_DP = 14;
     /** Roughly the width of the physical crease at this display's density. */
     static final int HINGE_DP = 22;
@@ -65,10 +62,11 @@ final class Chassis {
             chassis = on;
             Context c = getContext();
             if (on) {
-                // No right bezel: the desktop sits flush against the screen's right
-                // edge and the shortcut deck takes the left (see MainActivity).
-                setPadding(Ui.dp(c, BEZEL_SIDE_DP), Ui.dp(c, LID_TOP_DP),
-                        0, Ui.dp(c, LID_BOTTOM_DP));
+                // Video-first posture spends no horizontal pixels on a cosmetic
+                // side bezel; the top/bottom chassis still frames the panel.
+                setPadding(Ui.dp(c, DeckLayout.INNER_LID_SIDE_DP),
+                        Ui.dp(c, DeckLayout.INNER_LID_TOP_DP), 0,
+                        Ui.dp(c, DeckLayout.INNER_LID_BOTTOM_DP));
             } else {
                 setPadding(0, 0, 0, 0);
             }

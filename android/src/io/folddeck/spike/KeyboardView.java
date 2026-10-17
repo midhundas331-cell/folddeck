@@ -78,6 +78,7 @@ class KeyboardView extends View {
 
     private float gap, rowHeight;
     private boolean fnActive;
+    private boolean haptics = true;
 
     // TrackPoint nub, positioned between G, H and B once the layout is known.
     private float nubX, nubY, nubRadius;
@@ -96,6 +97,10 @@ class KeyboardView extends View {
 
     void setTrackPointListener(TrackPointListener l) {
         this.trackPoint = l;
+    }
+
+    void setHaptics(boolean enabled) {
+        haptics = enabled;
     }
 
     // ------------------------------------------------------------------ //
@@ -128,6 +133,7 @@ class KeyboardView extends View {
 
         text.setTextSize(rowHeight * 0.30f);
         placeNub();
+
     }
 
     private void placeNub() {
@@ -310,7 +316,7 @@ class KeyboardView extends View {
         Press p = new Press();
         p.cap = cap;
         byPointer.put(pointerId, p);
-        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        if (haptics) performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
 
         int code = cap.key.code;
 

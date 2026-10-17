@@ -29,11 +29,15 @@ class Panel extends FrameLayout {
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.setPadding(Ui.dp(c, 8), 0, Ui.dp(c, 20), 0);
+        header.setBackground(Ui.floatingPanel(Ui.SURFACE, Ui.LINE, 1, c));
+        Ui.elevate(header, c, Ui.FLOAT_MID_DP);
 
         TextView back = Ui.text(c, "‹", 30f, Ui.TEXT);
         back.setGravity(Gravity.CENTER);
         back.setBackground(Ui.pressable(Ui.square(Ui.BG)));
+        back.setContentDescription("Back");
         back.setClickable(true);
+        Motion.press(back);
         back.setOnClickListener(v -> onBack.run());
         // A 44dp target: the chevron glyph itself is far too small to hit.
         header.addView(back, new LinearLayout.LayoutParams(Ui.dp(c, 44), Ui.dp(c, 44)));

@@ -15,6 +15,9 @@ host/test_parser.py                access-unit splitter test
 host/test_theme.py                 theme SEI splice + extract round trip
 android/src/.../H264Stream.java    TCP -> Annex-B parser -> MediaCodec -> Surface
 android/src/.../KeyboardView.java  the keyboard: multitouch, latching, repeat
+android/src/.../DeckLayout.java    tested video-first geometry policy
+android/src/.../InputDeckLayout.java keyboard + optional trackpad allocation
+android/src/.../TrackpadDeck.java  held buttons, relative pad and scroll rail
 android/src/.../Ev.java            evdev keycodes + 60% ANSI layout
 android/src/.../MainActivity.java  screen routing, posture, stream lifecycle
 android/src/.../Ui.java            Omarchy palette (live), JetBrains Mono, square shapes, wordmark
@@ -132,20 +135,30 @@ The app wears the laptop's current Omarchy theme and changes with it, live.
   Not exercised on the phone: saving an edited list, and the chord parser's
   rejection messages (covered by `ShortcutsCheck` for the parser only).
 
-## Posture: the laptop
+## Posture: video first
 
-Unfolded and held in landscape, the crease runs horizontally across the middle
-of the inner display. `Chassis` makes it the hinge rather than fighting it: the
-lid and the base take **equal** weights either side of a centred hinge strip, so
-the seam lands *on* the crease. The old 58/42 split put it about a centimetre
-above, which is why the keyboard looked short.
+Unfolded and held in landscape, `DeckLayout.solve()` allocates a full-width 16:9
+desktop plus the 56dp shortcut row first. The keyboard and optional dedicated
+trackpad receive every remaining pixel below the 22dp visual hinge. At the Fold's
+measured 971×875dp inner landscape this produces roughly a 602dp lid and 251dp
+control base instead of wasting width in an equal half-screen letterbox.
 
 Detection is `smallestScreenWidthDp >= 600 && orientation == landscape` — the
 Fold's cover screen is around 410dp and the inner display well over 800dp, so
 the standard tablet breakpoint separates them cleanly and needs no
-androidx.window (which would drag Gradle into a two-second build). Nothing in
-`Chassis` applies to the cover screen: no bezels, no hinge, and the 58/42 split
-stays, because there is no crease to align to and no height to spend.
+androidx.window (which would drag Gradle into a two-second build). Cover landscape,
+portrait, keyboard-hidden and trackpad-only modes use their own bounded geometry;
+the pure JVM `DeckLayoutCheck` guards the thresholds.
+
+The dedicated trackpad is optional in Settings. On the open Fold it sits beside
+the resized keyboard so enabling it does not shrink the video. In portrait it
+stacks below the keyboard. Its left/right zones emit down on first contact and up
+only after the last contact releases; source-aware aggregation prevents a mouse,
+touch gesture or trackpad from releasing another source's held button. Cancel,
+detach, mode changes and disconnect all release ownership. The scroll rail,
+natural direction, button handedness, pad speed, TrackPoint speed, control scale,
+keyboard haptics, touchscreen pointer mode and Bluetooth mouse capture are user
+preferences.
 
 ## Security
 
@@ -462,6 +475,7 @@ is actually installed.
 | 0.2 | 2 | Bluetooth mouse: pointer capture, themed cursor, `MSG_PTR_ABS16` |
 | 0.3 | 3 | Physical keyboard: hides the on-screen one, forwards evdev scancodes; full-height desktop + shortcut grid; drawn cursor removed |
 | 0.4 | 4 | Explicit pairing window, per-host phone credentials, TLS 1.3 only, DoS/input/parser hardening, bounded decoder scheduling, premium motion/type hierarchy and TrackPoint polish |
+| 0.5 | 5 | Video-first Fold geometry, open-portrait control shelf, cover monitor/input transition, floating depth hierarchy, personalization, dedicated trackpad, held source-safe buttons and themed scroll rail |
 
 **0.2 needs a host from 2026-09-20 or later** — see the wire-format table under
 Input. Bump `versionCode` before building anything you plan to sideload.
@@ -472,7 +486,7 @@ Input. Bump `versionCode` before building anything you plan to sideload.
 ./android/build.sh            # ~2s, no Gradle, no network
 ```
 
-Built APK: `android/build/folddeck.apk` (226,848 bytes, v3-signed, min API 31).
+Built APK: `android/build/folddeck.apk` (239,136 bytes, v3-signed, min API 31).
 
 ### With a USB cable — lowest latency, measure this first
 
@@ -501,9 +515,10 @@ Then tap it in Files to install, launch, and enter one of:
 
 Host side: `./host/stream.py --bind 0.0.0.0 --clock`
 
-The HUD shows Mbps, frames decoded/dropped, and decoder p50/p99. Tap it to hide
-it before filming; long-press to change the address. Those numbers are the
-*client* half only — they do not include capture, encode or network.
+The optional HUD shows Mbps, frames decoded/dropped, and decoder p50/p99. Its
+visibility is controlled in Settings; address editing lives on Home/Settings.
+Those numbers are the *client* half only — they do not include capture, encode
+or network.
 
 ## Measuring glass-to-glass
 
@@ -538,7 +553,7 @@ and `keytool` need the JVM.
 Verified by running it:
 - encoder probe, encoder headroom, live capture — host works end to end
 - the served stream is valid decodable H.264 with the expected NAL order
-- **the APK builds clean and its signature verifies** (v3 scheme, 226,848 bytes); both
+- **the APK builds clean and its signature verifies** (v3 scheme, 235,040 bytes); all
   classes are present in the dex with lambdas desugared
 - **the Annex-B access-unit splitter**: the exact `drainNals()`/`onNal()`
   algorithm ported to Python and run against a real 173 KB capture fed in 1-, 3-,
@@ -568,14 +583,18 @@ Verified on the device:
 
 Not verified:
 - **the glass-to-glass number this spike exists to produce**
-- the keyboard on the device: layout, hit targets and latching are untested on
-  real glass
 - that the Qualcomm vendor low-latency key is honoured rather than ignored
-- **everything added on 2026-07-31**: the home, settings, guide and address
-  screens, the lock screen restyle, and the laptop chassis. It compiles and the
-  APK signs with the existing key, but none of it has been on the phone — in
-  particular whether `HINGE_DP` actually lands on the crease, and whether the
-  even split leaves the keyboard a comfortable key pitch.
+- live automated presses on the dedicated trackpad buttons and scroll rail were
+  deliberately not injected against the active desktop; their ownership,
+  release and accumulation state machines are covered by JVM checks instead.
+
+Verified on the Fold for 0.5:
+- inner landscape at 2184×1968/360dpi: full-width video, 56dp shortcut row,
+  comfortable six-row keyboard, optional 271dp side trackpad and 44dp scroll rail;
+- Settings scrolls without clipping and exposes the new personalization controls;
+- secure and temporary visual artifacts were both exercised, then the secure
+  artifact was reinstalled and screenshot protection re-confirmed;
+- Home, Settings and deck depth/spacing were inspected in dark and live-stream states.
 
 Not verified (2026-09-13 theme update):
 - **the new look on the phone.** It compiles, signs with the backed-up key

@@ -23,7 +23,7 @@ class SettingsView extends Panel {
         void onMouseSensitivity(float sens);
         void onChangePin();
         void onForgetHostCertificate();
-        void onLaptopLayoutChanged();
+        void onControlsChanged();
         void onHudChanged();
         void onEditShortcuts();
     }
@@ -42,7 +42,7 @@ class SettingsView extends Panel {
         addressValue = Ui.text(c, "", Ui.T_LABEL, Ui.ACCENT);
         body.addView(Ui.row(c, "Laptop address",
                 "Where the host is listening", addressValue, listener::onEditAddress),
-                Ui.fillW(c, 0));
+                Ui.fillW(c, 6));
 
         body.addView(Ui.row(c, "Connect after unlocking",
                 "Skip this screen and go straight to the desktop",
@@ -55,23 +55,43 @@ class SettingsView extends Panel {
         body.addView(Ui.sectionLabel(c, "Appearance"));
 
         body.addView(Ui.row(c, "Laptop layout when unfolded",
-                "Hinge and bezels, with the screen and keyboard split evenly on the crease",
+                "Hinge and bezels frame a full-width desktop above adaptive controls",
                 Ui.toggle(c, Prefs.laptopLayout(prefs), on -> {
                     Prefs.putBool(prefs, Prefs.LAPTOP_LAYOUT, on);
-                    listener.onLaptopLayoutChanged();
+                    listener.onControlsChanged();
                 }),
                 null),
-                Ui.fillW(c, 0));
+                Ui.fillW(c, 6));
 
         body.addView(Ui.row(c, "Hide keyboard when one is connected",
                 "A Bluetooth or USB keyboard types on the laptop, and the desktop "
                         + "and shortcuts take the space",
                 Ui.toggle(c, Prefs.hideKeyboard(prefs), on -> {
                     Prefs.putBool(prefs, Prefs.HIDE_KEYBOARD, on);
-                    listener.onLaptopLayoutChanged();
+                    listener.onControlsChanged();
                 }),
                 null),
-                Ui.fillW(c, 0));
+                Ui.fillW(c, 6));
+
+        TextView scaleValue = Ui.text(c, percentLabel(Prefs.controlScale(prefs)),
+                Ui.T_LABEL, Ui.ACCENT);
+        LinearLayout scale = sliderRow(c, "Control size", scaleValue,
+                Ui.slider(c, Prefs.controlScale(prefs), Prefs.CONTROL_SCALE_MIN,
+                        Prefs.CONTROL_SCALE_MAX, value -> {
+                            scaleValue.setText(percentLabel(value));
+                            prefs.edit().putFloat(Prefs.CONTROL_SCALE, value).apply();
+                            listener.onControlsChanged();
+                        }));
+        body.addView(Ui.row(c, "Control size",
+                "Compact gives the desktop more room; large makes controls easier to hit",
+                scale, null), Ui.fillW(c, 6));
+
+        body.addView(Ui.row(c, "Tactile key feedback",
+                "A quiet vibration on keyboard and trackpad-button presses",
+                Ui.toggle(c, Prefs.keyboardHaptics(prefs), on -> {
+                    Prefs.putBool(prefs, Prefs.KEYBOARD_HAPTICS, on);
+                    listener.onControlsChanged();
+                }), null), Ui.fillW(c, 6));
 
         body.addView(Ui.row(c, "Statistics overlay",
                 "Bitrate, frame counts and decode latency over the video",
@@ -87,6 +107,69 @@ class SettingsView extends Panel {
                 null, listener::onEditShortcuts),
                 Ui.fillW(c, 8));
 
+        // -------- touch and trackpad ---------------------------------------- //
+        body.addView(Ui.sectionLabel(c, "Touch & trackpad"));
+
+        body.addView(Ui.row(c, "Dedicated trackpad",
+                "Resizes the keyboard and adds held left/right buttons",
+                Ui.toggle(c, Prefs.trackpadDeck(prefs), on -> {
+                    Prefs.putBool(prefs, Prefs.TRACKPAD_DECK, on);
+                    listener.onControlsChanged();
+                }), null), Ui.fillW(c, 6));
+
+        body.addView(Ui.row(c, "Scroll rail",
+                "Theme-matched scrolling strip beside the dedicated pad",
+                Ui.toggle(c, Prefs.trackpadScroll(prefs), on -> {
+                    Prefs.putBool(prefs, Prefs.TRACKPAD_SCROLL, on);
+                    listener.onControlsChanged();
+                }), null), Ui.fillW(c, 6));
+
+        body.addView(Ui.row(c, "Natural scrolling",
+                "Dragging down moves the page content down",
+                Ui.toggle(c, Prefs.naturalScroll(prefs), on -> {
+                    Prefs.putBool(prefs, Prefs.NATURAL_SCROLL, on);
+                    listener.onControlsChanged();
+                }), null), Ui.fillW(c, 6));
+
+        body.addView(Ui.row(c, "Left-handed buttons",
+                "Swaps the dedicated trackpad's left and right zones",
+                Ui.toggle(c, Prefs.trackpadLeftHanded(prefs), on -> {
+                    Prefs.putBool(prefs, Prefs.TRACKPAD_LEFT_HANDED, on);
+                    listener.onControlsChanged();
+                }), null), Ui.fillW(c, 6));
+
+        body.addView(Ui.row(c, "Touchscreen trackpad mode",
+                "Finger movement over the desktop is relative instead of direct",
+                Ui.toggle(c, Prefs.pointerMode(prefs) == PointerPad.MODE_TRACKPAD, on -> {
+                    prefs.edit().putInt(Prefs.POINTER_MODE,
+                            on ? PointerPad.MODE_TRACKPAD : PointerPad.MODE_DIRECT).apply();
+                    listener.onControlsChanged();
+                }), null), Ui.fillW(c, 6));
+
+        TextView padSpeedValue = Ui.text(c, speedLabel(Prefs.trackpadSens(prefs)),
+                Ui.T_LABEL, Ui.ACCENT);
+        LinearLayout padSpeed = sliderRow(c, "Trackpad speed", padSpeedValue,
+                Ui.slider(c, Prefs.trackpadSens(prefs), Prefs.TRACKPAD_SENS_MIN,
+                        Prefs.TRACKPAD_SENS_MAX, value -> {
+                            padSpeedValue.setText(speedLabel(value));
+                            prefs.edit().putFloat(Prefs.TRACKPAD_SENS, value).apply();
+                            listener.onControlsChanged();
+                        }));
+        body.addView(Ui.row(c, "Trackpad speed",
+                "Cursor travel from the dedicated pad", padSpeed, null), Ui.fillW(c, 6));
+
+        TextView nubSpeedValue = Ui.text(c, speedLabel(Prefs.trackpointSens(prefs)),
+                Ui.T_LABEL, Ui.ACCENT);
+        LinearLayout nubSpeed = sliderRow(c, "TrackPoint speed", nubSpeedValue,
+                Ui.slider(c, Prefs.trackpointSens(prefs), Prefs.TRACKPOINT_SENS_MIN,
+                        Prefs.TRACKPOINT_SENS_MAX, value -> {
+                            nubSpeedValue.setText(speedLabel(value));
+                            prefs.edit().putFloat(Prefs.TRACKPOINT_SENS, value).apply();
+                            listener.onControlsChanged();
+                        }));
+        body.addView(Ui.row(c, "TrackPoint speed",
+                "Movement from the red keyboard nub", nubSpeed, null), Ui.fillW(c, 8));
+
         // -------- mouse ------------------------------------------------------ //
         body.addView(Ui.sectionLabel(c, "Mouse"));
 
@@ -101,6 +184,7 @@ class SettingsView extends Panel {
                     prefs.edit().putFloat(Prefs.MOUSE_SENS, sens).apply();
                     listener.onMouseSensitivity(sens);
                 });
+        bar.setContentDescription("Pointer speed");
         ((LinearLayout.LayoutParams) bar.getLayoutParams()).leftMargin = Ui.dp(c, 12);
         speed.addView(bar);
 
@@ -108,7 +192,14 @@ class SettingsView extends Panel {
                 "How far the cursor travels for a given movement of the mouse. "
                         + "1.0x tracks the desktop image one-to-one.",
                 speed, null),
-                Ui.fillW(c, 0));
+                Ui.fillW(c, 6));
+
+        body.addView(Ui.row(c, "Capture Bluetooth mouse",
+                "Send it to the laptop while the desktop is visible; turn off to keep Android's pointer",
+                Ui.toggle(c, Prefs.mouseAutoCapture(prefs), on -> {
+                    Prefs.putBool(prefs, Prefs.MOUSE_AUTO_CAPTURE, on);
+                    listener.onControlsChanged();
+                }), null), Ui.fillW(c, 6));
 
         TextView mouseNote = Ui.text(c,
                 "A Bluetooth mouse drives the laptop whenever the desktop is on "
@@ -127,7 +218,7 @@ class SettingsView extends Panel {
                 "PIN always works as well",
                 Ui.toggle(c, lock.biometricEnabled(), lock::setBiometricEnabled),
                 null),
-                Ui.fillW(c, 0));
+                Ui.fillW(c, 6));
 
         body.addView(Ui.row(c, "Change PIN",
                 "You will be asked to set a new four-digit PIN",
@@ -167,6 +258,20 @@ class SettingsView extends Panel {
         } catch (android.content.pm.PackageManager.NameNotFoundException e) {
             return "FoldDeck";   // cannot happen: it is our own package
         }
+    }
+
+    private static LinearLayout sliderRow(Context c, String label, TextView value, View slider) {
+        LinearLayout row = new LinearLayout(c);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.addView(value);
+        slider.setContentDescription(label);
+        ((LinearLayout.LayoutParams) slider.getLayoutParams()).leftMargin = Ui.dp(c, 12);
+        row.addView(slider);
+        return row;
+    }
+
+    private static String percentLabel(float value) {
+        return Math.round(value * 100f) + "%";
     }
 
     private static String speedLabel(float sens) {

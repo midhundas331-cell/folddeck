@@ -20,8 +20,8 @@ import java.util.List;
 /**
  * The shortcut deck: Omarchy shortcuts in the space the 16:9 desktop leaves over.
  *
- * An accent-bordered panel with its buttons flush inside, split by 1px lines like
- * keys on a board. Two shapes, chosen by MainActivity from the pane:
+ * An accent-bordered panel with individually raised tabs separated by a restrained
+ * 6dp channel. Two shapes, chosen by MainActivity from the pane:
  *
  *  row     under the desktop (upright screens): one line of buttons, swiped sideways
  *  column  left of the desktop (landscape): two columns — one when the deck is
@@ -59,7 +59,7 @@ class ShortcutBar extends FrameLayout {
     private final Paint border = new Paint();
     private List<Shortcuts.Item> items;
     private TextView modeCell;
-    private boolean vertical, compact, trackpad;
+    private boolean vertical, compact, trackpad, twoRows;
     /** Which sides get the accent border: left, top, right, bottom. A side against
      *  the app frame is left open, or the two 2dp lines would read as one fat one. */
     private final boolean[] edges = {true, true, true, true};
@@ -91,10 +91,26 @@ class ShortcutBar extends FrameLayout {
         rebuild();
     }
 
+    void setTrackpadMode(boolean enabled) {
+        trackpad = enabled;
+        styleModeCell();
+    }
+
     void setVertical(boolean on) {
         if (vertical == on) return;
         vertical = on;
         attachGrid();
+    }
+
+    /** Two rows inside one HorizontalScrollView, so both rows move together. */
+    void setTwoRows(boolean on) {
+        if (twoRows == on) return;
+        twoRows = on;
+        if (on && vertical) {
+            vertical = false;
+            attachGrid();
+        }
+        requestLayout();
     }
 
     /** A squeezed side deck: one column of smaller labels instead of two. */
@@ -178,7 +194,8 @@ class ShortcutBar extends FrameLayout {
         t.setLineSpacing(0, 1f);
         int pad = Ui.dp(c, compact ? 3 : 10);
         t.setPadding(pad, 0, pad, 0);
-        t.setBackground(Ui.pressable(Ui.square(Ui.SURFACE)));
+        t.setBackground(Ui.pressable(Ui.floatingPanel(Ui.SURFACE, Ui.LINE, 1, c)));
+        Ui.elevate(t, c, Ui.FLOAT_MID_DP);
         Motion.press(t);
         t.setOnClickListener(onClick);
         return t;
@@ -189,7 +206,9 @@ class ShortcutBar extends FrameLayout {
         modeCell.setText(trackpad ? (compact ? "TRACK" : "TRACKPAD") : "DIRECT");
         modeCell.setTypeface(Ui.MONO_BOLD);
         modeCell.setTextColor(trackpad ? Ui.ACCENT : Ui.TEXT_DIM);
-        modeCell.setBackground(Ui.pressable(Ui.square(trackpad ? Ui.SELECTED : Ui.SURFACE)));
+        modeCell.setBackground(Ui.pressable(Ui.floatingPanel(
+                trackpad ? Ui.SELECTED : Ui.SURFACE, trackpad ? Ui.ACCENT : Ui.LINE, 1,
+                getContext())));
     }
 
     @Override
@@ -232,7 +251,7 @@ class ShortcutBar extends FrameLayout {
 
         Grid(Context c) {
             super(c);
-            line = Math.max(1, Ui.dp(c, 1));
+            line = Ui.dp(c, 6);
             setOnDragListener((v, e) -> onDrag(e));
         }
 
@@ -253,13 +272,14 @@ class ShortcutBar extends FrameLayout {
             int minW = Ui.dp(getContext(), CELL_MIN_W_DP), minH = Ui.dp(getContext(), CELL_MIN_H_DP);
             int w, h;
             if (!vertical) {
-                cols = n;
+                cols = ShortcutGrid.columns(n, twoRows);
+                int shelfRows = ShortcutGrid.rows(n, twoRows);
                 h = MeasureSpec.getSize(hs);
-                int natural = n * minW + (n - 1) * line;
+                int natural = cols * minW + (cols - 1) * line;
                 w = MeasureSpec.getMode(ws) == MeasureSpec.EXACTLY
                         ? Math.max(MeasureSpec.getSize(ws), natural) : natural;
-                cellW = (w - (n - 1) * line) / n;
-                cellH = h;
+                cellW = (w - (cols - 1) * line) / cols;
+                cellH = (h - (shelfRows - 1) * line) / shelfRows;
             } else {
                 // Two columns beside the desktop; a side deck is never wide enough
                 // for more. The full-width band under it when a real keyboard has
