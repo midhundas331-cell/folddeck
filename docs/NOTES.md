@@ -160,6 +160,15 @@ natural direction, button handedness, pad speed, TrackPoint speed, control scale
 keyboard haptics, touchscreen pointer mode and Bluetooth mouse capture are user
 preferences.
 
+The trackpad's side is a preference per orientation (`Prefs.trackpadLeft`):
+landscape defaults to right of the keyboard, portrait to left of the shortcut
+shelf. Its zones are inset 6dp so the accent outline shows, as on the keyboard
+and shortcut deck. The cover screen is locked to landscape at runtime
+(`setRequestedOrientation(USER_LANDSCAPE)` while `smallestScreenWidthDp < 600`),
+so the manifest stays `fullUser` for the inner display. The cover's
+monitor/keyboard button can be dragged anywhere (`Motion.draggable`); its
+position is stored as a 0..1 fraction of its travel, so it survives resizes.
+
 ## Security
 
 **Transport: TLS 1.3, always on.** The host generates a

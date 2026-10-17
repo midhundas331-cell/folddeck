@@ -49,6 +49,12 @@ final class Prefs {
     static final String TRACKPAD_SENS = "trackpad_sens";
     static final String TRACKPOINT_SENS = "trackpoint_sens";
     static final String CONTROL_SCALE = "control_scale";
+    /** Which side of the keyboard the dedicated trackpad sits on, per orientation. */
+    static final String TRACKPAD_LEFT_LANDSCAPE = "trackpad_left_landscape";
+    static final String TRACKPAD_LEFT_PORTRAIT = "trackpad_left_portrait";
+    /** Where the cover screen's monitor/keyboard button was dragged to, 0..1 of its travel. */
+    static final String COVER_TOGGLE_X = "cover_toggle_x";
+    static final String COVER_TOGGLE_Y = "cover_toggle_y";
 
     /** The laptop's Omarchy palette as last sent down the stream, "key=#rrggbb" lines. */
     static final String THEME = "theme";
@@ -117,6 +123,13 @@ final class Prefs {
 
     static boolean trackpadLeftHanded(SharedPreferences p) {
         return p.getBoolean(TRACKPAD_LEFT_HANDED, false);
+    }
+
+    /** Defaults keep the original layout: right of the keyboard in landscape,
+     *  left of the shortcut shelf in portrait. */
+    static boolean trackpadLeft(SharedPreferences p, boolean landscape) {
+        return landscape ? p.getBoolean(TRACKPAD_LEFT_LANDSCAPE, false)
+                : p.getBoolean(TRACKPAD_LEFT_PORTRAIT, true);
     }
 
     static boolean naturalScroll(SharedPreferences p) {

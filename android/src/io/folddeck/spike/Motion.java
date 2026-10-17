@@ -5,6 +5,7 @@ import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.animation.DecelerateInterpolator;
 import android.view.animation.PathInterpolator;
 
@@ -49,6 +50,64 @@ final class Motion {
             }
             return false; // preserve click, long-click and drag behavior
         });
+    }
+
+    interface Drop {
+        void at(float translationX, float translationY);
+    }
+
+    /**
+     * press() plus drag-to-move. A drag past touch slop moves the view by
+     * translation, kept {@code margin} px inside its parent, and reports where it
+     * was dropped; a tap still clicks.
+     */
+    static void draggable(View view, int margin, Drop onDrop) {
+        final float[] start = new float[4];   // raw x, raw y, translation x, y
+        final boolean[] dragging = {false};
+        final int slop = ViewConfiguration.get(view.getContext()).getScaledTouchSlop();
+        view.setOnTouchListener((v, event) -> {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    start[0] = event.getRawX();
+                    start[1] = event.getRawY();
+                    start[2] = v.getTranslationX();
+                    start[3] = v.getTranslationY();
+                    dragging[0] = false;
+                    animatePressScale(v, PRESS_SCALE, PRESS_MS, new DecelerateInterpolator());
+                    return false;
+                case MotionEvent.ACTION_MOVE: {
+                    float dx = event.getRawX() - start[0], dy = event.getRawY() - start[1];
+                    if (!dragging[0] && Math.hypot(dx, dy) > slop) {
+                        dragging[0] = true;
+                        // Cancel the view's own press so the drop is not a click.
+                        MotionEvent cancel = MotionEvent.obtain(event);
+                        cancel.setAction(MotionEvent.ACTION_CANCEL);
+                        v.onTouchEvent(cancel);
+                        cancel.recycle();
+                    }
+                    if (!dragging[0]) return false;
+                    View parent = (View) v.getParent();
+                    v.setTranslationX(clamp(start[2] + dx, margin - v.getLeft(),
+                            parent.getWidth() - margin - v.getRight()));
+                    v.setTranslationY(clamp(start[3] + dy, margin - v.getTop(),
+                            parent.getHeight() - margin - v.getBottom()));
+                    return true;
+                }
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    animatePressScale(v, 1f, RELEASE_MS, spring());
+                    if (!dragging[0]) return false;
+                    dragging[0] = false;
+                    onDrop.at(v.getTranslationX(), v.getTranslationY());
+                    return true;
+                default:
+                    return false;
+            }
+        });
+    }
+
+    static float clamp(float value, float min, float max) {
+        return max < min ? min : Math.max(min, Math.min(max, value));
     }
 
     static boolean pressKeepsTranslationIndependent() {

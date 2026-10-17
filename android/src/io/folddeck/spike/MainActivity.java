@@ -5,6 +5,7 @@ import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.animation.ValueAnimator;
 import android.content.SharedPreferences;
+import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.os.Bundle;
 import android.util.TypedValue;
@@ -535,19 +536,45 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         coverToggle.setContentDescription("Show keyboard and trackpad");
         coverToggle.setBackground(Ui.pressable(Ui.floatingPanel(Ui.SURFACE_HI, Ui.ACCENT, 2, this)));
         Ui.elevate(coverToggle, this, Ui.FLOAT_ELEVATION_DP);
-        Motion.press(coverToggle);
+        // Tap toggles; drag moves it out of the way, remembered across launches.
+        Motion.draggable(coverToggle, Ui.dp(this, COVER_TOGGLE_MARGIN_DP), (tx, ty) -> {
+            float[] travel = coverToggleTravel();
+            int m = Ui.dp(this, COVER_TOGGLE_MARGIN_DP);
+            prefs.edit()
+                    .putFloat(Prefs.COVER_TOGGLE_X, travel[0] > 0 ? (tx - m) / travel[0] : 1f)
+                    .putFloat(Prefs.COVER_TOGGLE_Y, travel[1] > 0 ? (ty - m) / travel[1] : 0f)
+                    .apply();
+        });
         coverToggle.setOnClickListener(v -> toggleCoverConsole());
         coverToggle.setVisibility(View.GONE);
 
         deckStage = new FrameLayout(this);
         deckStage.addView(deck, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
-        FrameLayout.LayoutParams toggleLp = new FrameLayout.LayoutParams(
-                Ui.dp(this, 54), Ui.dp(this, 54), Gravity.TOP | Gravity.END);
-        toggleLp.setMargins(Ui.dp(this, 12), Ui.dp(this, 12),
-                Ui.dp(this, 12), Ui.dp(this, 12));
-        deckStage.addView(coverToggle, toggleLp);
+        // Laid out at the top-left corner and positioned by translation, so a
+        // drag and a stored position are the same thing.
+        deckStage.addView(coverToggle, new FrameLayout.LayoutParams(
+                Ui.dp(this, COVER_TOGGLE_DP), Ui.dp(this, COVER_TOGGLE_DP),
+                Gravity.TOP | Gravity.START));
+        deckStage.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or_, ob) -> placeCoverToggle());
         return deckStage;
+    }
+
+    private static final int COVER_TOGGLE_DP = 54, COVER_TOGGLE_MARGIN_DP = 12;
+
+    /** How far the cover button can travel inside its margins, x and y, in px. */
+    private float[] coverToggleTravel() {
+        int size = Ui.dp(this, COVER_TOGGLE_DP), m = Ui.dp(this, COVER_TOGGLE_MARGIN_DP);
+        return new float[]{Math.max(0, deckStage.getWidth() - size - 2 * m),
+                Math.max(0, deckStage.getHeight() - size - 2 * m)};
+    }
+
+    /** Put the cover button where it was last dropped; top-right by default. */
+    private void placeCoverToggle() {
+        float[] travel = coverToggleTravel();
+        int m = Ui.dp(this, COVER_TOGGLE_MARGIN_DP);
+        coverToggle.setTranslationX(m + travel[0] * prefs.getFloat(Prefs.COVER_TOGGLE_X, 1f));
+        coverToggle.setTranslationY(m + travel[1] * prefs.getFloat(Prefs.COVER_TOGGLE_Y, 0f));
     }
 
     /** Pin a child of a FrameLayout to an exact box; a no-op when already there. */
@@ -625,6 +652,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         }
         Configuration cfg = getResources().getConfiguration();
         coverDisplay = DeckLayout.isCover(cfg.smallestScreenWidthDp);
+        // The cover screen is landscape only; the inner display follows the user.
+        int orientation = coverDisplay ? ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
+                : ActivityInfo.SCREEN_ORIENTATION_FULL_USER;
+        if (getRequestedOrientation() != orientation) setRequestedOrientation(orientation);
         coverConsole.updatePosture(coverDisplay);
         coverInputMode = coverConsole.controlsExpanded();
 
@@ -675,7 +706,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             inputDeck.setInputEnabled(!animateCover && controlsShown);
             inputDeck.configure(visualControls && (keyboardShown || !controlsShown),
                     visualControls && (trackpadShown || !controlsShown),
-                    solved.sideBySide, dockShortcuts);
+                    solved.sideBySide, dockShortcuts,
+                    Prefs.trackpadLeft(prefs, totalW >= totalH));
         }
 
         if (animateCover) {
@@ -746,7 +778,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 if (!expanding) {
                     releaseDeckInput();
                     base.setVisibility(View.GONE);
-                    inputDeck.configure(false, false, false, false);
+                    inputDeck.configure(false, false, false, false, false);
                 } else {
                     inputDeck.setInputEnabled(true);
                 }

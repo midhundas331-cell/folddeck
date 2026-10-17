@@ -32,6 +32,7 @@ final class InputDeckLayout extends ViewGroup {
     private boolean trackpadVisible;
     private boolean sideBySide;
     private boolean portraitConsole;
+    private boolean padLeft;
     private boolean inputEnabled = true;
     private final int gap;
     private final float density;
@@ -70,7 +71,8 @@ final class InputDeckLayout extends ViewGroup {
     }
 
     void configure(boolean showKeyboard, boolean showTrackpad, boolean horizontalSplit,
-                   boolean portraitShelf) {
+                   boolean portraitShelf, boolean trackpadLeft) {
+        padLeft = trackpadLeft;
         keyboardVisible = showKeyboard;
         trackpadVisible = showTrackpad;
         sideBySide = horizontalSplit;
@@ -106,7 +108,8 @@ final class InputDeckLayout extends ViewGroup {
 
     static Boxes computeBoxes(int width, int height, int gap,
                               boolean keyboard, boolean trackpad,
-                              boolean sideBySide, boolean portraitConsole, float density) {
+                              boolean sideBySide, boolean portraitConsole, boolean padLeft,
+                              float density) {
         Box none = new Box(0, 0, 0, 0);
         if (!keyboard && !trackpad) return new Boxes(none, none, none);
 
@@ -117,9 +120,9 @@ final class InputDeckLayout extends ViewGroup {
                     Math.min(shelfMax, Math.max(0, height - gap)));
             int keyY = shelfH + gap;
             int half = trackpad ? Math.max(0, (width - gap) / 2) : 0;
-            Box pad = trackpad ? new Box(0, 0, half, shelfH) : none;
-            Box shortcuts = new Box(trackpad ? half + gap : 0, 0,
-                    trackpad ? width - half - gap : width, shelfH);
+            int rest = trackpad ? width - half - gap : width;
+            Box pad = trackpad ? new Box(padLeft ? 0 : rest + gap, 0, half, shelfH) : none;
+            Box shortcuts = new Box(trackpad && padLeft ? half + gap : 0, 0, rest, shelfH);
             return new Boxes(new Box(0, keyY, width, height - keyY), pad, shortcuts);
         }
 
@@ -134,8 +137,11 @@ final class InputDeckLayout extends ViewGroup {
             int min = Math.round(220f * density), max = Math.round(300f * density);
             int padW = clamp(Math.round(width * 0.28f), min, Math.min(max, width - gap));
             int keyW = Math.max(0, width - gap - padW);
-            return new Boxes(new Box(0, 0, keyW, height),
-                    new Box(keyW + gap, 0, padW, height), none);
+            return padLeft
+                    ? new Boxes(new Box(padW + gap, 0, keyW, height),
+                            new Box(0, 0, padW, height), none)
+                    : new Boxes(new Box(0, 0, keyW, height),
+                            new Box(keyW + gap, 0, padW, height), none);
         }
 
         int min = Math.round(104f * density), max = Math.round(160f * density);
@@ -149,7 +155,7 @@ final class InputDeckLayout extends ViewGroup {
     protected void onMeasure(int widthSpec, int heightSpec) {
         int width = MeasureSpec.getSize(widthSpec), height = MeasureSpec.getSize(heightSpec);
         Boxes boxes = computeBoxes(width, height, gap, keyboardVisible,
-                trackpadVisible, sideBySide, portraitConsole, density);
+                trackpadVisible, sideBySide, portraitConsole, padLeft, density);
         if (keyboard != null && keyboardVisible) {
             keyboard.measure(exact(boxes.keyboard.w), exact(boxes.keyboard.h));
         }
@@ -165,7 +171,7 @@ final class InputDeckLayout extends ViewGroup {
     @Override
     protected void onLayout(boolean changed, int l, int t, int r, int b) {
         Boxes boxes = computeBoxes(r - l, b - t, gap, keyboardVisible,
-                trackpadVisible, sideBySide, portraitConsole, density);
+                trackpadVisible, sideBySide, portraitConsole, padLeft, density);
         if (keyboard != null && keyboardVisible) {
             Box box = boxes.keyboard;
             keyboard.layout(box.x, box.y, box.right(), box.bottom());

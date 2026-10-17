@@ -47,7 +47,7 @@ final class TrackpadDeck extends View {
         stroke.setStrokeWidth(Math.max(1f, density));
         text.setTypeface(Ui.MONO_BOLD);
         text.setTextAlign(Paint.Align.CENTER);
-        setBackground(Ui.floatingPanel(Ui.SURFACE, Ui.LINE, 1, context));
+        setBackground(Ui.floatingPanel(Ui.SURFACE, Ui.ACCENT, 1, context));
         Ui.elevate(this, context);
         setContentDescription("Dedicated trackpad with held left and right buttons");
     }
@@ -66,8 +66,9 @@ final class TrackpadDeck extends View {
         naturalScroll = natural;
         sensitivity = Prefs.clampTrackpadSens(speed);
         haptics = tactile;
-        setBackground(Ui.floatingPanel(Ui.SURFACE, Ui.LINE, 1, getContext()));
-        requestLayout();
+        setBackground(Ui.floatingPanel(Ui.SURFACE, Ui.ACCENT, 1, getContext()));
+        // Zones depend on these settings, not only on size.
+        if (getWidth() > 0) onSizeChanged(getWidth(), getHeight(), getWidth(), getHeight());
         invalidate();
     }
 
@@ -86,6 +87,14 @@ final class TrackpadDeck extends View {
 
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+        // Zones are inset from the panel so its accent outline stays visible,
+        // the same frame the keyboard and shortcut deck wear.
+        float inset = Ui.dp(getContext(), 6);
+        layoutZones(w - 2 * inset, h - 2 * inset);
+        for (RectF r : new RectF[]{pad, scroll, left, right}) r.offset(inset, inset);
+    }
+
+    private void layoutZones(float w, float h) {
         float gap = Ui.dp(getContext(), 7);
         float buttonH = Math.max(Ui.dp(getContext(), 48), h * 0.24f);
         float railW = showScroll ? Math.max(Ui.dp(getContext(), 42), w * 0.14f) : 0f;

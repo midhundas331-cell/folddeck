@@ -138,6 +138,20 @@ class SettingsView extends Panel {
                     listener.onControlsChanged();
                 }), null), Ui.fillW(c, 6));
 
+        body.addView(Ui.row(c, "Trackpad on the left in landscape",
+                "Off puts it to the right of the keyboard",
+                Ui.toggle(c, Prefs.trackpadLeft(prefs, true), on -> {
+                    Prefs.putBool(prefs, Prefs.TRACKPAD_LEFT_LANDSCAPE, on);
+                    listener.onControlsChanged();
+                }), null), Ui.fillW(c, 6));
+
+        body.addView(Ui.row(c, "Trackpad on the left in portrait",
+                "Off puts it to the right of the shortcut shelf",
+                Ui.toggle(c, Prefs.trackpadLeft(prefs, false), on -> {
+                    Prefs.putBool(prefs, Prefs.TRACKPAD_LEFT_PORTRAIT, on);
+                    listener.onControlsChanged();
+                }), null), Ui.fillW(c, 6));
+
         body.addView(Ui.row(c, "Touchscreen trackpad mode",
                 "Finger movement over the desktop is relative instead of direct",
                 Ui.toggle(c, Prefs.pointerMode(prefs) == PointerPad.MODE_TRACKPAD, on -> {
