@@ -262,7 +262,7 @@ update the **host first**. An older APK never sends type 6 and never gets audio.
 
 Verified 2026-10-17 on the Fold 7: the default sink switches to `folddeck` on
 connect, and a test tone played on the laptop shows up as a started 48 kHz
-`AudioTrack` owned by `io.folddeck.spike`. Not yet checked by ear for latency.
+`AudioTrack` owned by `io.folddeck.spike`; confirmed by ear the same day.
 
 ## Capture is lazy
 
