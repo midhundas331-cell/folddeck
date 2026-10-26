@@ -79,7 +79,6 @@ sudo usermod -aG input "$USER"      # then log out and back in
 
 # 2. Run the host
 pip install -r host/requirements.txt
-host/stream.py --probe              # which encoder works here
 host/stream.py                      # serve securely on 0.0.0.0:5000
 python3 host/security.py pair       # open a one-use 2-minute pairing window
 

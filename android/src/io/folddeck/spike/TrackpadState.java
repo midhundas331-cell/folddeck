@@ -67,6 +67,17 @@ final class TrackpadState {
         return notches;
     }
 
+    /**
+     * The finger left the wheel: it clicks into the nearest detent, as a real
+     * notched wheel does. Past half a notch that is the next one, which scrolls.
+     */
+    int settle(float pxPerNotch) {
+        int n = pxPerNotch > 0f && Math.abs(scrollRemainder) >= pxPerNotch / 2f
+                ? (scrollRemainder > 0 ? 1 : -1) : 0;
+        scrollRemainder = 0f;
+        return n;
+    }
+
     void resetScroll() {
         scrollRemainder = 0f;
     }

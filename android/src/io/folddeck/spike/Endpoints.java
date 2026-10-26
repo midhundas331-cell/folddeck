@@ -86,15 +86,6 @@ final class Endpoints {
         return homeHost != null && awayHost != null;
     }
 
-    /** The address to show when nothing has been probed yet. */
-    String summary() {
-        if (!isConfigured()) return null;
-        if (!hasBoth()) return homeHost != null
-                ? EndpointText.format(homeHost, homePort)
-                : EndpointText.format(awayHost, awayPort);
-        return EndpointText.format(homeHost, homePort) + "  ·  "
-                + EndpointText.format(awayHost, awayPort);
-    }
 
     /**
      * Probe both addresses in parallel and report the winner on the main thread.

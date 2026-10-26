@@ -18,6 +18,8 @@ import android.widget.TextView;
 class Panel extends FrameLayout {
 
     private final LinearLayout content;
+    private final TextView title;
+    private final ScrollView scroll;
 
     Panel(Context c, String titleText, Runnable onBack) {
         super(c);
@@ -29,21 +31,20 @@ class Panel extends FrameLayout {
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.setPadding(Ui.dp(c, 8), 0, Ui.dp(c, 20), 0);
-        header.setBackground(Ui.floatingPanel(Ui.SURFACE, Ui.LINE, 1, c));
-        Ui.elevate(header, c, Ui.FLOAT_MID_DP);
+        header.setBackgroundColor(Ui.BG);
 
-        TextView back = Ui.text(c, "‹", 30f, Ui.TEXT);
+        TextView back = Ui.text(c, "‹", 34f, Ui.TEXT);
         back.setGravity(Gravity.CENTER);
         back.setBackground(Ui.pressable(Ui.square(Ui.BG)));
         back.setContentDescription("Back");
         back.setClickable(true);
         Motion.press(back);
-        back.setOnClickListener(v -> onBack.run());
+        back.setOnClickListener(v -> { if (!up()) onBack.run(); });
         // A 44dp target: the chevron glyph itself is far too small to hit.
         header.addView(back, new LinearLayout.LayoutParams(Ui.dp(c, 44), Ui.dp(c, 44)));
 
-        TextView title = Ui.text(c, titleText, Ui.T_TITLE, Ui.TEXT);
-        title.setTypeface(Ui.FONT_BOLD);
+        title = Ui.text(c, titleText, Ui.T_TITLE, Ui.TEXT);
+        title.setTypeface(Ui.MONO_BOLD);
         LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -51,13 +52,13 @@ class Panel extends FrameLayout {
         header.addView(title, titleLp);
 
         View hairline = new View(c);
-        hairline.setBackgroundColor(Ui.LINE);
+        hairline.setBackgroundColor(Ui.SEPARATOR);
 
         // -------- body ----------------------------------------------------- //
         content = Ui.readableColumn(c);
         content.setPadding(Ui.dp(c, 20), Ui.dp(c, 4), Ui.dp(c, 20), Ui.dp(c, 40));
 
-        ScrollView scroll = new ScrollView(c);
+        scroll = new ScrollView(c);
         scroll.setFillViewport(true);
         LinearLayout centre = new LinearLayout(c);
         centre.setOrientation(LinearLayout.VERTICAL);
@@ -78,6 +79,17 @@ class Panel extends FrameLayout {
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
         addView(root, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+    }
+
+    /** A sheet with sub-pages steps up one level here; true if it did. */
+    boolean up() {
+        return false;
+    }
+
+    /** Retitle the header and jump back to the top, for a sheet that pages. */
+    void showPage(String titleText) {
+        title.setText(titleText);
+        scroll.scrollTo(0, 0);
     }
 
     /** Where subclasses add their rows. */

@@ -203,9 +203,6 @@ class VirtualPointer:
     def _syn(self) -> None:
         self._emit(EV_SYN, SYN_REPORT, 0)
 
-    def move(self, x_permille: int, y_permille: int) -> None:
-        """Absolute position in permille. Kept for clients older than MSG_PTR_ABS16."""
-        self.move_abs(x_permille * U16_MAX // 1000, y_permille * U16_MAX // 1000)
 
     def move_abs(self, x: int, y: int) -> None:
         """Absolute position, each axis 0..65535.

@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""FoldDeck phase-0 spike: capture the X11 desktop, encode H.264, serve over TCP.
+"""FoldDeck host: capture the desktop, encode H.264, serve it to the phone over TLS,
+and inject the phone's keyboard, pointer and scroll back through uinput.
 
-The whole point of this file is to answer one question before any real work
-starts: what is the glass-to-glass latency on THIS hardware? If it's over
-~100ms, the custom stack in PLAN.md isn't worth building (see PLAN.md §0).
+Capture is KMS (direct framebuffer) when the privileged ffmpeg copy exists,
+else wf-recorder on Wayland, else x11grab.
 
 Usage:
-    ./stream.py --probe                 # which encoder works here, and how fast
     ./stream.py                         # serve on 0.0.0.0:5000
     ./stream.py --bind 127.0.0.1        # USB mode, pair with `adb reverse tcp:5000 tcp:5000`
-    ./stream.py --clock                 # also open a millisecond clock to film
 
 A fresh encoder is spawned per connection, so every client starts on an IDR.
 While connected, another IDR is emitted every two seconds so a damaged/dropped
@@ -18,6 +16,8 @@ decode unit recovers instead of freezing for the lifetime of the connection.
 from __future__ import annotations
 
 import argparse
+import copy
+import glob
 import os
 import re
 import select
@@ -43,6 +43,13 @@ import security
 # no CBR) and NVENC can't load libcuda.so.1. A listing tells you what was
 # compiled in, not what works.
 # --------------------------------------------------------------------------- #
+# Constant-QP quality for the VA-API paths (lower = sharper, more data). 26 kept
+# text crisp but turned video soft and blocky; 20 is roughly 2-3x the bits
+# (~25-30 Mbps with video playing). The phone says when it is on mobile data
+# (MSG_NETWORK) and gets 26 there, so an hour of video is not ~12 GB of its plan.
+QP_WIFI, QP_MOBILE = 20, 26
+QP = QP_WIFI
+
 ENCODERS: list[tuple[str, list[str]]] = [
     (
         "vaapi-cbr",
@@ -56,7 +63,7 @@ ENCODERS: list[tuple[str, list[str]]] = [
         # desktop — a static screen costs almost nothing.
         "vaapi-cqp",
         ["-vf", "format=nv12,hwupload", "-vaapi_device", "/dev/dri/renderD128",
-         "-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", "26", "-low_power", "1"],
+         "-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", "{qp}", "-low_power", "1"],
     ),
     (
         "nvenc",
@@ -83,7 +90,7 @@ WF_ENCODERS: dict[str, list[str]] = {
     "vaapi-cbr": ["-c", "h264_vaapi", "-d", "/dev/dri/renderD128",
                   "-p", "rc_mode=CBR", "-p", "b={bitrate}", "-p", "low_power=1"],
     "vaapi-cqp": ["-c", "h264_vaapi", "-d", "/dev/dri/renderD128",
-                  "-p", "rc_mode=CQP", "-p", "qp=26", "-p", "low_power=1"],
+                  "-p", "rc_mode=CQP", "-p", "qp={qp}", "-p", "low_power=1"],
     "nvenc":     ["-c", "h264_nvenc", "-p", "preset=p1", "-p", "tune=ull",
                   "-p", "rc=cbr", "-p", "b={bitrate}", "-p", "zerolatency=1"],
     "x264":      ["-c", "libx264", "-p", "preset=ultrafast", "-p", "tune=zerolatency",
@@ -91,11 +98,6 @@ WF_ENCODERS: dict[str, list[str]] = {
 }
 
 WF_COMMON = ["-b", "0", "-p", "profile=main"]
-
-
-def stream_source(args) -> str:
-    """Human-readable name of what is being captured, for log lines."""
-    return wayland_output(args.output) if is_wayland() else args.display
 
 
 def is_wayland() -> bool:
@@ -119,10 +121,10 @@ def wayland_output(preferred: str = "") -> str:
     return "eDP-1"
 
 
-def encoder_args(name: str, bitrate_kbps: int, gop: int = 9999) -> list[str]:
+def encoder_args(name: str, bitrate_kbps: int, gop: int = 9999, qp: int = QP) -> list[str]:
     args = dict(ENCODERS)[name]
     return [
-        a.format(bitrate=f"{bitrate_kbps}k", bufsize=f"{bitrate_kbps // 4}k")
+        a.format(bitrate=f"{bitrate_kbps}k", bufsize=f"{bitrate_kbps // 4}k", qp=qp)
         for a in args
     ] + ["-g", str(gop)] + COMMON
 
@@ -166,19 +168,77 @@ def wayland_capture_cmd(args, encoder: str) -> list[str]:
       with "Failed to configure graph filter: Function not implemented". So the
       Wayland path always encodes at the output's native size.
     """
-    enc = [a.format(bitrate=f"{args.bitrate}k", bufsize=f"{args.bitrate // 4}k")
+    enc = [a.format(bitrate=f"{args.bitrate}k", bufsize=f"{args.bitrate // 4}k",
+                    qp=getattr(args, "qp", QP))
            for a in WF_ENCODERS[encoder]]
     return [
         "wf-recorder",
-        "--no-damage",                      # constant rate; damage-driven is bursty
+        "--no-damage",
         "-o", wayland_output(args.output),
-        "-r", str(args.fps),
+        # No -r. It pads the stream to constant rate with copies of the last
+        # frame, and on a still screen (Hyprland renders ~10 fps then) those
+        # copies are encoded in bursts of 5-7 at 3 ms each -- a fresh frame
+        # waited behind them. Measured 2026-10-26: arrival lagged capture by
+        # 20-160 ms. Without it, each real frame is encoded the moment it exists.
         *enc, "-p", f"g={max(1, args.fps * 2)}", *WF_COMMON,
-        "-m", "h264", "-f", "pipe:1",
+        # FLV only for its framing; see flv_frames().
+        "-m", "flv", "-f", "pipe:1",
     ]
 
 
+# --------------------------------------------------------------------------- #
+# KMS capture
+#
+# wf-recorder asks Hyprland for every frame, and Hyprland answers by rendering
+# the whole screen a second time on its single main thread. Measured 2026-10-26
+# on this laptop: capture took Hyprland from 33% to 94% CPU on a still screen,
+# and a 60 fps video came through at ~9 fps. kmsgrab reads the framebuffer the
+# display is already scanning out, straight from DRM, so the compositor does no
+# extra work and the stream runs at a true 60. The catch is CAP_SYS_ADMIN: a
+# private copy of ffmpeg holds it (see install-kms.sh). Without it, wf-recorder.
+#
+# kmsgrab sees only the primary plane, so Hyprland must draw the cursor into it
+# (cursor:no_hardware_cursors) or the pointer vanishes from the stream.
+# --------------------------------------------------------------------------- #
+KMS_FFMPEG = os.path.expanduser("~/.local/lib/folddeck/ffmpeg-kms")
+
+
+def kms_device() -> str:
+    cards = sorted(glob.glob("/dev/dri/card*"))
+    return cards[0] if cards else "/dev/dri/card0"
+
+
+def kms_capture_cmd(args, frames: int = 0) -> list[str]:
+    return [
+        KMS_FFMPEG, "-hide_banner", "-loglevel", "error",
+        "-framerate", str(args.fps), "-device", kms_device(), "-f", "kmsgrab", "-i", "-",
+        # The grabbed framebuffer is a GPU buffer; map it into VA-API and convert
+        # there, so no frame ever crosses into system memory.
+        "-vf", "hwmap=derive_device=vaapi,scale_vaapi=format=nv12",
+        "-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", str(getattr(args, "qp", QP)), "-low_power", "1",
+        "-g", str(max(1, args.fps * 2)), "-bf", "0", "-profile:v", "main",
+        *(["-frames:v", str(frames)] if frames else []),
+        "-flush_packets", "1", "-f", "flv", "-",
+    ]
+
+
+def kms_works(args) -> bool:
+    """True if the privileged ffmpeg copy can actually grab and encode a frame."""
+    if not os.access(KMS_FFMPEG, os.X_OK):
+        return False
+    try:
+        r = subprocess.run(kms_capture_cmd(args, frames=2), capture_output=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if r.returncode != 0 or not r.stdout.startswith(b"FLV"):
+        print(f"kms capture unavailable: {r.stderr.decode(errors='replace').strip()[:160]}")
+        return False
+    return True
+
+
 def capture_cmd(args, encoder: str) -> list[str]:
+    if getattr(args, "kms", False):
+        return kms_capture_cmd(args)
     if is_wayland():
         return wayland_capture_cmd(args, encoder)
     return [
@@ -189,79 +249,9 @@ def capture_cmd(args, encoder: str) -> list[str]:
         "-draw_mouse", "1",
         "-i", args.display,
         *(["-s", f"{args.out_width}x{args.out_height}"] if args.out_width else []),
-        *encoder_args(encoder, args.bitrate, max(1, args.fps * 2)),
-        "-f", "h264", "-",
+        *encoder_args(encoder, args.bitrate, max(1, args.fps * 2), getattr(args, "qp", QP)),
+        "-f", "flv", "-",
     ]
-
-
-def encode_headroom(args, encoder: str, frames: int = 300) -> float:
-    """Encoder throughput at full tilt, in ms/frame.
-
-    Uses a synthetic *moving* source with no realtime pacing, so the number is
-    the encoder's actual speed. Measuring the live desktop instead would mostly
-    measure how still your screen is: an idle desktop encodes to almost nothing
-    and reports a flattering figure that collapses the moment you drag a window.
-    """
-    cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", f"testsrc2=size={args.width}x{args.height}:rate={args.fps}",
-        "-frames:v", str(frames),
-        *encoder_args(encoder, args.bitrate),
-        "-f", "null", "-",
-    ]
-    t0 = time.perf_counter()
-    subprocess.run(cmd, capture_output=True, timeout=180)
-    elapsed = time.perf_counter() - t0
-    return elapsed * 1000 / frames
-
-
-def live_cadence(args, encoder: str, seconds: float = 5.0) -> tuple[float, list[float]]:
-    """Throughput and inter-chunk gaps on the real desktop."""
-    proc = subprocess.Popen(capture_cmd(args, encoder), stdout=subprocess.PIPE, bufsize=0)
-    gaps: list[float] = []
-    total = 0
-    t_start = time.perf_counter()
-    last = t_start
-    try:
-        while time.perf_counter() - t_start < seconds:
-            chunk = proc.stdout.read(4096)
-            if not chunk:
-                break
-            now = time.perf_counter()
-            total += len(chunk)
-            if total > 65536:  # skip the startup burst (SPS/PPS + first IDR)
-                gaps.append((now - last) * 1000)
-            last = now
-    finally:
-        proc.kill()
-        proc.wait()
-    elapsed = time.perf_counter() - t_start
-    gaps.sort()
-    return (total * 8 / elapsed / 1e6), gaps
-
-
-def probe_latency(args, encoder: str) -> None:
-    """The host half of the budget. Not glass-to-glass — that needs the camera
-    (--clock) — but it bounds how good the rest can possibly be."""
-    print(f"\nencoder headroom ({encoder}, {args.width}x{args.height}, synthetic motion)...")
-    ms = encode_headroom(args, encoder)
-    budget = 1000 / args.fps
-    print(f"  {ms:.2f} ms/frame  ->  {1000 / ms:.0f} fps sustained "
-          f"({ms / budget * 100:.0f}% of the {budget:.1f} ms budget at {args.fps} fps)")
-    if ms > budget:
-        print("  ** encoder cannot keep up at this resolution/fps. Lower one of them. **")
-
-    print(f"\nlive desktop cadence ({stream_source(args)})...")
-    mbps, gaps = live_cadence(args, encoder)
-    if not gaps:
-        print("  no data — is DISPLAY correct?")
-        return
-    print(f"  throughput   {mbps:.1f} Mbps")
-    print(f"  chunk gap    p50 {gaps[len(gaps)//2]:.2f} ms   "
-          f"p99 {gaps[int(len(gaps)*0.99)]:.2f} ms   max {gaps[-1]:.2f} ms")
-    print("\n  On an idle desktop the gap tracks frame pacing (~1000/fps), not encode")
-    print("  time, and throughput will be near zero — that is the damage-tracking win")
-    print("  showing up for free. Re-run while dragging a window for the loaded case.")
 
 
 # --------------------------------------------------------------------------- #
@@ -331,6 +321,13 @@ def serve(args, encoder: str) -> None:
             # Nagle would coalesce small tail-of-frame writes into 40ms clumps,
             # which is a whole frame of latency added for no bandwidth benefit.
             raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            # DSCP CS4: Wi-Fi WMM puts it in the video access category, which
+            # contends for airtime ahead of best-effort traffic.
+            raw.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, 0x80)
+            # A phone that vanishes (left Wi-Fi, out of range) leaves data unacked;
+            # drop it after 10 s instead of the kernel's ~15 min, so the laptop
+            # gets its audio and encoder back.
+            raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, 10_000)
             dispatch_client(raw, addr, args=args, tls=tls,
                             allow_new=allow_new, encoder=encoder,
                             kbd=kbd, ptr=ptr, handshake_slots=handshake_slots,
@@ -350,6 +347,9 @@ def configure_pairing(requested: bool) -> bool:
     if requested:
         security.open_pairing()
     return False
+
+
+_live: list[socket.socket | None] = [None]   # the connection that owns the stream, so a newcomer can kick it
 
 
 def dispatch_client(raw, addr, *, args, tls, allow_new, encoder, kbd, ptr,
@@ -379,10 +379,22 @@ def dispatch_client(raw, addr, *, args, tls, allow_new, encoder, kbd, ptr,
             return
         try:
             owns_stream = active.acquire(blocking=False)
+            if not owns_stream and _live[0] is not None:
+                # Only an authorised phone gets here, and there is one phone: a
+                # second connection means the first is dead -- typically Wi-Fi to
+                # mobile data, which never closes the old socket. Kick it rather
+                # than refuse the phone until TCP notices, minutes later.
+                print(f"[{time.strftime('%H:%M:%S')}] {addr[0]} takes over the stream")
+                try:
+                    socket.socket.shutdown(_live[0], socket.SHUT_RDWR)  # raw fd, not TLS
+                except OSError:
+                    pass
+                owns_stream = active.acquire(timeout=5)
             if not owns_stream:
                 print(f"[{time.strftime('%H:%M:%S')}] authenticated client "
                       f"{addr[0]} refused: another stream is active")
                 return
+            _live[0] = conn
             print(f"[{time.strftime('%H:%M:%S')}] client {addr[0]}:{addr[1]} connected")
             pump_fn(conn, args, encoder, kbd, ptr)
             print(f"[{time.strftime('%H:%M:%S')}] client gone\n")
@@ -392,6 +404,7 @@ def dispatch_client(raw, addr, *, args, tls, allow_new, encoder, kbd, ptr,
             except OSError:
                 pass
             if owns_stream:
+                _live[0] = None
                 active.release()
 
     thread = threading.Thread(target=worker, name=f"folddeck-{addr[0]}", daemon=True)
@@ -465,22 +478,23 @@ def handshake(raw: socket.socket, addr, tls, allow_new: bool):
 _reject_count = 0
 _reject_token = ""
 
-MSG_KEY, MSG_PTR_ABS, MSG_BUTTON, MSG_SCROLL, MSG_PTR_ABS16, MSG_AUDIO = 1, 2, 3, 4, 5, 6
+# Type 2 was the pre-0.2 permille pointer; retired, never reuse the number.
+MSG_KEY, MSG_BUTTON, MSG_SCROLL, MSG_PTR_ABS16, MSG_AUDIO = 1, 3, 4, 5, 6
+MSG_NETWORK = 7
 
 # type -> payload length. Every message is fixed-size for its type, so no length
 # field is needed; an unknown type means the stream has desynced.
 #
-# MSG_PTR_ABS (permille) is still parsed so an older APK keeps working, but
-# every current client sends MSG_PTR_ABS16 instead: permille is 1.9px per step
-# across a 1920px desktop, which a finger never noticed and a mouse does.
 # MSG_AUDIO (u8 on/off) is the phone opting in to laptop audio; an older APK
 # never sends it, so it never receives audio NALs its decoder would choke on.
-_PAYLOAD_LEN = {MSG_KEY: 3, MSG_PTR_ABS: 4, MSG_BUTTON: 2, MSG_SCROLL: 4,
-                MSG_PTR_ABS16: 4, MSG_AUDIO: 1}
+# MSG_NETWORK (u8, 1 = mobile data) picks the stream quality; an older APK never
+# sends it and keeps the Wi-Fi quality.
+_PAYLOAD_LEN = {MSG_KEY: 3, MSG_BUTTON: 2, MSG_SCROLL: 4,
+                MSG_PTR_ABS16: 4, MSG_AUDIO: 1, MSG_NETWORK: 1}
 
 
 def input_reader(conn: socket.socket, kbd, ptr, stop: threading.Event,
-                 io_lock: threading.Lock, on_audio=None) -> None:
+                 io_lock: threading.Lock, on_audio=None, on_network=None) -> None:
     """Read input events off the same socket and inject them.
 
     TCP is full-duplex, so the reverse channel costs no extra connection. Input
@@ -529,9 +543,6 @@ def input_reader(conn: socket.socket, kbd, ptr, stop: threading.Event,
                 if typ == MSG_KEY and kbd is not None:
                     code, down = struct.unpack(">HB", payload)
                     kbd.key(code, down == 1)
-                elif typ == MSG_PTR_ABS and ptr is not None:
-                    x, y = struct.unpack(">HH", payload)
-                    ptr.move(x, y)
                 elif typ == MSG_PTR_ABS16 and ptr is not None:
                     x, y = struct.unpack(">HH", payload)
                     ptr.move_abs(x, y)
@@ -543,6 +554,8 @@ def input_reader(conn: socket.socket, kbd, ptr, stop: threading.Event,
                     ptr.scroll(dv, dh)
                 elif typ == MSG_AUDIO and on_audio is not None:
                     on_audio(payload[0] == 1)
+                elif typ == MSG_NETWORK and on_network is not None:
+                    on_network(payload[0] == 1)
     except (OSError, ConnectionResetError, ssl.SSLError, ValueError):
         pass
     finally:
@@ -552,6 +565,13 @@ def input_reader(conn: socket.socket, kbd, ptr, stop: threading.Event,
             kbd.release_all()
         if ptr is not None:
             ptr.release_all()
+        # A reader that quit on its own (desync, phone closed) must end the
+        # stream too, or the video plays on with input silently dead.
+        if not stop.is_set():
+            try:
+                socket.socket.shutdown(conn, socket.SHUT_RDWR)   # raw fd, not TLS
+            except (OSError, TypeError):
+                pass
 
 
 # --------------------------------------------------------------------------- #
@@ -583,71 +603,160 @@ def theme_nal(path: str = THEME_COLORS) -> bytes:
     return b"\x00\x00\x00\x01\x06\x05" + size + payload + b"\x80"
 
 
-def splice_nal(chunk: bytes, nal: bytes, first: bool) -> bytes | None:
-    """Insert a whole NAL before the chunk's first start code, or None if it has none.
+# Every unit sent to the phone -- a frame, the palette, a slice of audio -- ends
+# with an access unit delimiter. A NAL in Annex-B only ends where the next start
+# code begins, so without a terminator the phone held each frame until the next
+# one arrived and then one more (two frames of latency). The AUD's start code
+# closes the unit at once. An older APK just hands the AUD to its decoder.
+AUD = b"\x00\x00\x00\x01\x09\xf0"
 
-    Only at a start code: dropped mid-NAL it would corrupt the frame around it.
-    Before a 4-byte start code this leaves one 00 behind on the previous NAL,
-    which Annex B allows as trailing_zero_8bits. The first chunk of a capture
-    starts on a start code, so it takes the NAL at 0.
+
+def _read_exact(f, n: int) -> bytes:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = f.read(n - len(buf))
+        if not chunk:
+            raise EOFError
+        buf += chunk
+    return bytes(buf)
+
+
+def _avcc_nals(body: bytes, size_len: int) -> list[bytes]:
+    out, i = [], 0
+    while i + size_len <= len(body):
+        n = int.from_bytes(body[i:i + size_len], "big")
+        i += size_len
+        out.append(body[i:i + n])
+        i += n
+    return out
+
+
+def flv_frames(f):
+    """Yield each video frame of an FLV capture as Annex-B bytes.
+
+    FLV is here only for its framing: every tag states its length, so a frame is
+    known complete the moment its last byte arrives. SPS/PPS live in the FLV
+    sequence header rather than in-band, so they are put back before every
+    keyframe, which is what the phone's decoder setup expects.
     """
-    at = 0 if first else chunk.find(b"\x00\x00\x01")
-    return None if at < 0 else chunk[:at] + nal + chunk[at:]
+    header = _read_exact(f, 9)
+    if header[:3] != b"FLV":
+        raise ValueError("capture is not FLV")
+    _read_exact(f, int.from_bytes(header[5:9], "big") - 9 + 4)   # + PreviousTagSize0
+    params, size_len = b"", 4
+    while True:
+        tag = _read_exact(f, 11)
+        data = _read_exact(f, int.from_bytes(tag[1:4], "big"))
+        _read_exact(f, 4)                                         # PreviousTagSize
+        if tag[0] & 0x1F != 9 or len(data) < 5 or data[0] & 0x0F != 7:
+            continue                                              # not AVC video
+        keyframe, kind, body = data[0] >> 4 == 1, data[1], data[5:]
+        if kind == 0:                                             # avcC record
+            size_len = (body[4] & 3) + 1
+            sets, i = [], 6
+            for count_at_end in (False, True):
+                count = body[5] & 0x1F if not count_at_end else body[i]
+                i += count_at_end
+                for _ in range(count):
+                    n = int.from_bytes(body[i:i + 2], "big")
+                    sets.append(body[i + 2:i + 2 + n])
+                    i += 2 + n
+            params = b"".join(b"\x00\x00\x00\x01" + n for n in sets)
+        elif kind == 1:
+            nals = _avcc_nals(body, size_len)
+            yield (params if keyframe else b"") + b"".join(
+                b"\x00\x00\x00\x01" + n for n in nals)
 
 
 def pump(conn: socket.socket, args, encoder: str, kbd, ptr) -> None:
+    args = copy.copy(args)   # quality is per connection
+    args.qp = QP_WIFI
+    want_qp = [args.qp]      # set by the input thread from MSG_NETWORK
+
+    def on_network(mobile: bool) -> None:
+        want_qp[0] = QP_MOBILE if mobile else QP_WIFI
+
     proc = subprocess.Popen(capture_cmd(args, encoder), stdout=subprocess.PIPE, bufsize=0)
     total, t0, last_report = 0, time.perf_counter(), time.perf_counter()
-
-    # Sent before the first video byte, then again whenever the theme changes.
-    theme = theme_nal()
-    pending_theme, last_theme_check = theme, t0
+    frames = frames_at_report = 0
 
     stop = threading.Event()
-    io_lock = threading.Lock()
+    io_lock = threading.Lock()   # one thread inside OpenSSL at a time
+
+    def send(unit: bytes) -> None:
+        with io_lock:
+            conn.sendall(unit + AUD)
+
     route = audio.AudioRoute()
-    pending_audio = b""
+
+    def audio_sender() -> None:
+        # Audio has its own clock. Riding on video frames tied it to the screen:
+        # a still desktop sends ~10 frames a second, which is 100 ms audio gaps.
+        while not stop.is_set():
+            pcm = route.take(0.2)
+            if not pcm:
+                continue
+            try:
+                send(audio.audio_nal(pcm))
+            except (OSError, ssl.SSLError):
+                return
+
     reader = threading.Thread(target=input_reader,
-                              args=(conn, kbd, ptr, stop, io_lock, route.set),
+                              args=(conn, kbd, ptr, stop, io_lock, route.set, on_network),
                               name="input", daemon=True)
     reader.start()
+    threading.Thread(target=audio_sender, name="audio-send", daemon=True).start()
 
     try:
+        theme = theme_nal()
+        if theme:
+            send(theme)
+        last_theme_check = t0
+        waited = sending = 0.0
+        mark = time.perf_counter()
         while True:
-            chunk = proc.stdout.read(32768)
-            if not chunk:
+            for frame in flv_frames(proc.stdout):
+                now = time.perf_counter()
+                waited += now - mark
+                if now - last_theme_check >= 1.0:
+                    last_theme_check = now
+                    latest = theme_nal()
+                    if latest and latest != theme:
+                        theme = latest
+                        send(theme)
+                        print("    theme changed, sending palette", flush=True)
+
+                send(frame)
+                mark = time.perf_counter()
+                sending += mark - now
+                total += len(frame)
+                frames += 1
+
+                if now - last_report >= 2.0:
+                    mbps = total * 8 / (now - t0) / 1e6
+                    fps = (frames - frames_at_report) / (now - last_report)
+                    # Where the time went: waiting on the capture vs blocked sending.
+                    # Blocked sending means the network or the phone is the limit.
+                    print(f"    {mbps:5.1f} Mbps   {total / 1e6:6.1f} MB sent   {fps:5.1f} fps"
+                          f"   capture {waited * 1000 / max(1, frames - frames_at_report):5.1f}"
+                          f" ms/f  send {sending * 1000 / max(1, frames - frames_at_report):5.1f} ms/f",
+                          flush=True)
+                    last_report, frames_at_report = now, frames
+                    waited = sending = 0.0
+                if want_qp[0] != args.qp:
+                    break
+            else:
                 break
-
-            now = time.perf_counter()
-            if now - last_theme_check >= 1.0:
-                last_theme_check = now
-                latest = theme_nal()
-                if latest and latest != theme:
-                    theme = pending_theme = latest
-                    print("    theme changed, sending palette", flush=True)
-            if pending_theme:
-                spliced = splice_nal(chunk, pending_theme, first=total == 0)
-                if spliced is not None:
-                    chunk, pending_theme = spliced, b""
-            # Audio waits for a start code like the theme does; anything recorded
-            # meanwhile joins the same NAL.
-            pending_audio += route.take()
-            if pending_audio and total:
-                spliced = splice_nal(chunk, audio.audio_nal(pending_audio), first=False)
-                if spliced is not None:
-                    chunk, pending_audio = spliced, b""
-                elif len(pending_audio) > audio.MAX_BUFFERED:
-                    pending_audio = b""
-
-            with io_lock:
-                conn.sendall(chunk)
-            total += len(chunk)
-
-            now = time.perf_counter()
-            if now - last_report >= 2.0:
-                mbps = total * 8 / (now - t0) / 1e6
-                print(f"    {mbps:5.1f} Mbps   {total / 1e6:6.1f} MB sent", flush=True)
-                last_report = now
+            # The phone changed network class: restart the encoder at the new
+            # quality. The next keyframe carries fresh SPS/PPS in-band.
+            proc.kill()
+            proc.wait()
+            args.qp = want_qp[0]
+            print(f"    quality: QP {args.qp} for "
+                  f"{'mobile data' if args.qp == QP_MOBILE else 'Wi-Fi'}", flush=True)
+            proc = subprocess.Popen(capture_cmd(args, encoder), stdout=subprocess.PIPE, bufsize=0)
+    except EOFError:
+        print("    capture ended", flush=True)
     except (BrokenPipeError, ConnectionResetError, ssl.SSLError, OSError) as exc:
         # A phone going away looks like SSLZeroReturnError (clean close_notify) or
         # SSLEOFError (radio dropped, socket just died). Both are routine. Letting
@@ -662,43 +771,6 @@ def pump(conn: socket.socket, args, encoder: str, kbd, ptr) -> None:
         conn.close()
         reader.join(timeout=1)
         route.stop()
-
-
-def open_clock(display: str) -> subprocess.Popen | None:
-    """A millisecond clock to film alongside the phone.
-
-    Point a 240fps camera at both screens, then subtract: the difference between
-    the clock on the laptop and the clock visible in the mirrored image IS the
-    glass-to-glass latency. No instrumentation, no trust in either end's timers.
-    """
-    env = {**os.environ, "DISPLAY": display}
-    gtk_clock = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clock.py")
-
-    # GTK first: it repaints faster than the panel refreshes and carries the
-    # frame-boundary bar. The terminal fallbacks do neither well.
-    if os.path.exists(gtk_clock):
-        try:
-            subprocess.run([sys.executable, "-c", "import gi"], check=True,
-                           capture_output=True, timeout=10)
-            return subprocess.Popen([sys.executable, gtk_clock], env=env)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
-            pass
-
-    loop = "while :; do printf '\\r%s' \"$(date +%H:%M:%S.%3N)\"; done"
-    if shutil.which("xterm"):
-        return subprocess.Popen(
-            ["xterm", "-fa", "Monospace", "-fs", "72", "-bg", "black", "-fg", "white",
-             "-geometry", "20x2+40+40", "-T", "folddeck-clock",
-             "-e", "bash", "-c", loop],
-            env=env)
-    if shutil.which("gnome-terminal"):
-        return subprocess.Popen(
-            ["gnome-terminal", "--title=folddeck-clock", "--", "bash", "-c", loop],
-            env=env)
-
-    print("note: no way to open a clock window (need python3-gi, xterm or "
-          "gnome-terminal) — you can still stream, but not measure latency")
-    return None
 
 
 def argument_parser() -> argparse.ArgumentParser:
@@ -729,8 +801,6 @@ def argument_parser() -> argparse.ArgumentParser:
     pairing.add_argument("--no-pairing", action="store_false", dest="pairing",
                          help=argparse.SUPPRESS)  # compatibility with old service files
     ap.set_defaults(pairing=False)
-    ap.add_argument("--probe", action="store_true", help="probe encoders + measure, then exit")
-    ap.add_argument("--clock", action="store_true", help="open a ms clock window to film")
     return ap
 
 
@@ -762,19 +832,15 @@ def main() -> int:
     encoder = args.encoder or probe_encoder(args.bitrate)
     print(f"\n=> using {encoder}")
 
-    if args.probe:
-        probe_latency(args, encoder)
-        return 0
+    args.kms = is_wayland() and kms_works(args)
+    print("capture: " + ("KMS (direct framebuffer)" if args.kms
+                         else "wf-recorder (compositor screencopy)"))
 
-    clock = open_clock(args.display) if args.clock else None
     signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
     try:
         serve(args, encoder)
     except KeyboardInterrupt:
         pass
-    finally:
-        if clock:
-            clock.kill()
     return 0
 
 

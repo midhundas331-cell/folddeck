@@ -78,6 +78,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private ShortcutsView shortcutsView;
     private ShortcutBar shortcutBar;
     private TextView coverToggle;
+    /** Unfolded only: the desktop alone, centred, no frame -- for watching video. */
+    private TextView theatreToggle;
+    private boolean theatre;
+    /** Folded, screen-only: a slim wheel in the band beside the desktop. */
+    private TrackpadDeck coverWheel;
     private final CoverConsole coverConsole = new CoverConsole();
     private boolean coverDisplay;
     private boolean coverInputMode;
@@ -130,6 +135,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         Crash.install(getApplicationContext());
+        lastMobile = onMobileData();
+        try {
+            getSystemService(android.net.ConnectivityManager.class)
+                    .registerDefaultNetworkCallback(networkWatch);
+        } catch (RuntimeException e) {
+            android.util.Log.w("FoldDeck", "no network callback", e);
+        }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
 
         // A crash from the previous run is worth more than getting straight back
@@ -241,6 +253,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             @Override
             protected void dispatchDraw(android.graphics.Canvas canvas) {
                 super.dispatchDraw(canvas);
+                if (theatre) return;
                 paint.setStyle(android.graphics.Paint.Style.STROKE);
                 paint.setStrokeWidth(width);
                 paint.setColor(Ui.ACCENT);
@@ -283,10 +296,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         deck.setBackgroundColor(Ui.BG);
         hud.setTextColor(Ui.OK);
         for (View v : new View[]{root, lid, base, hinge, keyboard, inputDeck,
-                trackpadDeck, pointerPad, coverToggle}) v.invalidate();
-        coverToggle.setTextColor(Ui.TEXT);
-        coverToggle.setBackground(Ui.pressable(
-                Ui.floatingPanel(Ui.SURFACE_HI, Ui.ACCENT, 2, this)));
+                trackpadDeck, pointerPad, coverWheel}) v.invalidate();
+        for (TextView b : new TextView[]{coverToggle, theatreToggle}) {
+            b.setTextColor(Ui.TEXT);
+            b.setBackground(Ui.pressable(Ui.floatingPanel(Ui.SURFACE_HI, Ui.ACCENT, 2, this)));
+        }
         configureTrackpad();
         shortcutBar.rebuild();
 
@@ -392,6 +406,20 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP | Gravity.START));
 
+        coverWheel = new TrackpadDeck(this);
+        coverWheel.setWheelOnly();
+        coverWheel.setInset(Ui.dp(this, 2));
+        coverWheel.setListener(new TrackpadDeck.Listener() {
+            // Only the wheel is drawn; a stray second finger moves and clicks nothing.
+            @Override public void onMove(float dx, float dy) { }
+            @Override public void onButton(int button, boolean down) { }
+            @Override public void onScroll(int vertical) {
+                if (stream != null) stream.sendScroll(vertical, 0);
+            }
+        });
+        coverWheel.setVisibility(View.GONE);
+        videoPane.addView(coverWheel, new FrameLayout.LayoutParams(0, 0));
+
         // Letterbox the surface to the stream's aspect ratio, and tell the
         // pointer overlay where the image actually landed.
         //
@@ -419,9 +447,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     vh = paneH;
                     vw = Math.round(vh * aspect);
                 }
-                int align = Prefs.desktopAlign(prefs);
+                int align = theatre ? 1 : Prefs.desktopAlign(prefs);
                 int x = (paneW - vw) * align / 2, y = (paneH - vh) * align / 2;
                 place(surfaceView, x, y, vw, vh);
+                if (coverWheel.getVisibility() == View.VISIBLE) {
+                    // In the empty band beside the desktop, on the side it leaves
+                    // widest; over the image's edge if there is no band.
+                    int ww = Ui.dp(this, COVER_WHEEL_DP), wh = paneH;
+                    place(coverWheel, align == 2 ? 0 : paneW - ww, (paneH - wh) / 2, ww, wh);
+                }
                 pointerPad.setVideoBounds(x, y, x + vw, y + vh);
                 lid.setScreen(lid.getPaddingLeft() + x, lid.getPaddingTop() + y,
                         lid.getPaddingLeft() + x + vw, lid.getPaddingTop() + y + vh);
@@ -488,7 +522,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         });
 
         keyboard = new KeyboardView(this);
-        Ui.elevate(keyboard, this, Ui.FLOAT_LOW_DP);
+        // No elevation: caps paint their own depth, and a raised keyboard would
+        // draw over (and take touches from) the split trackpad laid in its middle.
         keyboard.setKeyListener((code, down) -> {
             if (stream != null) stream.sendKey(code, down);
         });
@@ -545,36 +580,50 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             if (r - l != or_ - ol || b - t != ob - ot) applyPosture(false);
         });
 
-        coverToggle = Ui.text(this, "⌨", Ui.T_TITLE, Ui.TEXT);
-        coverToggle.setGravity(Gravity.CENTER);
-        coverToggle.setContentDescription("Show keyboard and trackpad");
-        coverToggle.setBackground(Ui.pressable(Ui.floatingPanel(Ui.SURFACE_HI, Ui.ACCENT, 2, this)));
-        Ui.elevate(coverToggle, this, Ui.FLOAT_ELEVATION_DP);
-        // Tap toggles; drag moves it out of the way, remembered across launches.
-        Motion.draggable(coverToggle, Ui.dp(this, COVER_TOGGLE_MARGIN_DP), (tx, ty) -> {
-            float[] travel = coverToggleTravel();
-            int m = Ui.dp(this, COVER_TOGGLE_MARGIN_DP);
-            prefs.edit()
-                    .putFloat(Prefs.COVER_TOGGLE_X, travel[0] > 0 ? (tx - m) / travel[0] : 1f)
-                    .putFloat(Prefs.COVER_TOGGLE_Y, travel[1] > 0 ? (ty - m) / travel[1] : 0f)
-                    .apply();
-        });
-        coverToggle.setOnClickListener(v -> toggleCoverConsole());
-        coverToggle.setVisibility(View.GONE);
-
         deckStage = new FrameLayout(this);
         deckStage.addView(deck, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
-        // Laid out at the top-left corner and positioned by translation, so a
-        // drag and a stored position are the same thing.
-        deckStage.addView(coverToggle, new FrameLayout.LayoutParams(
-                Ui.dp(this, COVER_TOGGLE_DP), Ui.dp(this, COVER_TOGGLE_DP),
-                Gravity.TOP | Gravity.START));
-        deckStage.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or_, ob) -> placeCoverToggle());
+        coverToggle = floatingButton("⌨", "Show keyboard and trackpad",
+                Prefs.COVER_TOGGLE_X, Prefs.COVER_TOGGLE_Y, v -> toggleCoverConsole());
+        theatreToggle = floatingButton("▣", "Desktop only, for watching video",
+                Prefs.THEATRE_TOGGLE_X, Prefs.THEATRE_TOGGLE_Y, v -> setTheatre(!theatre));
+        deckStage.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or_, ob) -> {
+            placeFloating(coverToggle, Prefs.COVER_TOGGLE_X, Prefs.COVER_TOGGLE_Y);
+            placeFloating(theatreToggle, Prefs.THEATRE_TOGGLE_X, Prefs.THEATRE_TOGGLE_Y);
+        });
         return deckStage;
     }
 
+    /**
+     * A floating square button over the deck. Tap acts; drag moves it out of the
+     * way, remembered across launches. Laid out at the top-left corner and
+     * positioned by translation, so a drag and a stored position are the same thing.
+     */
+    private TextView floatingButton(String glyph, String description, String keyX, String keyY,
+                                    View.OnClickListener onTap) {
+        TextView b = Ui.text(this, glyph, Ui.T_TITLE, Ui.TEXT);
+        b.setGravity(Gravity.CENTER);
+        b.setContentDescription(description);
+        b.setBackground(Ui.pressable(Ui.floatingPanel(Ui.SURFACE_HI, Ui.ACCENT, 2, this)));
+        Ui.elevate(b, this, Ui.FLOAT_ELEVATION_DP);
+        Motion.draggable(b, Ui.dp(this, COVER_TOGGLE_MARGIN_DP), (tx, ty) -> {
+            float[] travel = coverToggleTravel();
+            int m = Ui.dp(this, COVER_TOGGLE_MARGIN_DP);
+            prefs.edit()
+                    .putFloat(keyX, travel[0] > 0 ? (tx - m) / travel[0] : 1f)
+                    .putFloat(keyY, travel[1] > 0 ? (ty - m) / travel[1] : 0f)
+                    .apply();
+        });
+        b.setOnClickListener(onTap);
+        b.setVisibility(View.GONE);
+        deckStage.addView(b, new FrameLayout.LayoutParams(
+                Ui.dp(this, COVER_TOGGLE_DP), Ui.dp(this, COVER_TOGGLE_DP),
+                Gravity.TOP | Gravity.START));
+        return b;
+    }
+
     private static final int COVER_TOGGLE_DP = 54, COVER_TOGGLE_MARGIN_DP = 12;
+    private static final int COVER_WHEEL_DP = 40;
 
     /** How far the cover button can travel inside its margins, x and y, in px. */
     private float[] coverToggleTravel() {
@@ -583,12 +632,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 Math.max(0, deckStage.getHeight() - size - 2 * m)};
     }
 
-    /** Put the cover button where it was last dropped; top-right by default. */
-    private void placeCoverToggle() {
+    /** Put a floating button where it was last dropped; top-right by default. */
+    private void placeFloating(View b, String keyX, String keyY) {
         float[] travel = coverToggleTravel();
         int m = Ui.dp(this, COVER_TOGGLE_MARGIN_DP);
-        coverToggle.setTranslationX(m + travel[0] * prefs.getFloat(Prefs.COVER_TOGGLE_X, 1f));
-        coverToggle.setTranslationY(m + travel[1] * prefs.getFloat(Prefs.COVER_TOGGLE_Y, 0f));
+        b.setTranslationX(m + travel[0] * prefs.getFloat(keyX, 1f));
+        b.setTranslationY(m + travel[1] * prefs.getFloat(keyY, 0f));
     }
 
     /** Pin a child of a FrameLayout to an exact box; a no-op when already there. */
@@ -629,6 +678,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private void configureTrackpad() {
+        if (coverWheel != null) {
+            coverWheel.configure(true, false, Prefs.naturalScroll(prefs), 1f,
+                    Prefs.keyboardHaptics(prefs), false);
+        }
         if (trackpadDeck == null) return;
         trackpadDeck.configure(Prefs.trackpadScroll(prefs),
                 Prefs.trackpadLeftHanded(prefs), Prefs.naturalScroll(prefs),
@@ -684,11 +737,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         if (getRequestedOrientation() != orientation) setRequestedOrientation(orientation);
         coverConsole.updatePosture(coverDisplay);
         coverInputMode = coverConsole.controlsExpanded();
+        if (coverDisplay && theatre) setTheatre(false);   // theatre is an unfolded thing
+        coverWheel.setVisibility(coverDisplay && !coverInputMode ? View.VISIBLE : View.GONE);
 
         boolean preferredKeyboard = !(Prefs.hideKeyboard(prefs) && hardKeyboard());
         int preset = Prefs.layout(prefs, posture());
         // On the cover the preset is what the corner button reveals.
-        boolean revealed = !coverDisplay || coverInputMode;
+        boolean revealed = !theatre && (!coverDisplay || coverInputMode);
         keyboardShown = revealed && Prefs.layoutHasKeyboard(preset)
                 && (coverDisplay || preferredKeyboard);
         boolean trackpadShown = revealed && Prefs.layoutHasTrackpad(preset);
@@ -711,8 +766,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         int hingePx = laptop ? Ui.dp(this, Chassis.HINGE_DP) : 0;
         int availablePx = Math.max(0, totalH - hingePx);
         float density = getResources().getDisplayMetrics().density;
+        // A split board is a keyboard-sized band; the pad lives inside it.
+        boolean split = Prefs.layoutSplit(preset) && keyboardShown && trackpadShown;
         DeckLayout.Result solved = DeckLayout.solve(totalW / density, availablePx / density,
-                cfg.smallestScreenWidthDp, totalW >= totalH, keyboardShown, trackpadShown,
+                cfg.smallestScreenWidthDp, totalW >= totalH, keyboardShown, trackpadShown && !split,
                 (float) streamSize[0] / Math.max(1, streamSize[1]), Prefs.controlScale(prefs));
         int lidPx = controlsShown
                 ? Math.max(0, Math.min(availablePx, Math.round(solved.lidDp * density)))
@@ -725,7 +782,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         shortcutBar.setTwoRows(dockShortcuts);
         shortcutBar.setCompact(false);
         shortcutBar.setEdges(true, true, true, true);
-        shortcutBar.setVisibility(!showShortcuts || coverDisplay && !coverInputMode
+        shortcutBar.setVisibility(!showShortcuts || theatre || coverDisplay && !coverInputMode
                 ? View.GONE : View.VISIBLE);
 
         // Keep the old controls painted during the collapse while their base moves
@@ -736,7 +793,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             inputDeck.configure(visualControls && (keyboardShown || !controlsShown),
                     visualControls && (trackpadShown || !controlsShown),
                     solved.sideBySide, dockShortcuts,
-                    Prefs.trackpadLeft(prefs, totalW >= totalH), Prefs.trackpadSize(prefs));
+                    Prefs.trackpadLeft(prefs, totalW >= totalH), Prefs.trackpadSize(prefs),
+                    split);
         }
 
         if (animateCover) {
@@ -807,7 +865,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 if (!expanding) {
                     releaseDeckInput();
                     base.setVisibility(View.GONE);
-                    inputDeck.configure(false, false, false, false, false, 1f);
+                    inputDeck.configure(false, false, false, false, false, 1f, false);
                 } else {
                     inputDeck.setInputEnabled(true);
                 }
@@ -841,6 +899,21 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         if (trackpadDeck != null) trackpadDeck.cancelInput();
     }
 
+    /**
+     * The desktop alone: no keyboard, deck, chassis or accent borders, centred on
+     * black. The floating button and Back both leave it.
+     */
+    private void setTheatre(boolean on) {
+        if (theatre == on) return;
+        theatre = on;
+        int frame = on ? 0 : Ui.dp(this, 2);
+        root.setPadding(frame, frame, frame, frame);
+        root.invalidate();
+        videoPane.setBackgroundColor(on ? android.graphics.Color.BLACK : android.graphics.Color.TRANSPARENT);
+        hud.setVisibility(!on && Prefs.showHud(prefs) ? View.VISIBLE : View.GONE);
+        applyPosture(false);
+    }
+
     private void toggleCoverConsole() {
         if (!coverDisplay) return;
         coverConsole.toggle();
@@ -850,6 +923,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     private void updateCoverToggle() {
         if (coverToggle == null) return;
+        theatreToggle.setVisibility(!coverDisplay && screen == SCREEN_DECK
+                ? View.VISIBLE : View.GONE);
+        // Over a film it stays findable but out of the way.
+        theatreToggle.setAlpha(theatre ? 0.25f : 1f);
         // A monitor-only cover preset has nothing to reveal.
         coverToggle.setVisibility(coverDisplay && screen == SCREEN_DECK
                 && Prefs.layout(prefs, Prefs.POSTURE_COVER) != Prefs.LAYOUT_MONITOR
@@ -873,6 +950,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
+        pinRefreshRate();   // folding swaps displays, and each has its own modes
         if (deck != null) applyPosture(false);
         hideSystemBars();
     }
@@ -1030,7 +1108,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 : which == SCREEN_GUIDE ? guideView
                 : which == SCREEN_ADDRESS ? addressView
                 : which == SCREEN_SHORTCUTS ? shortcutsView : null;
-        if (target != null && previous != which) Motion.enter(target);
+        // Fade in only over the desktop. Between two sheets the old one is
+        // already gone, so a fade from transparent flashed the live desktop
+        // underneath for a moment.
+        if (target != null && previous == SCREEN_DECK) Motion.enter(target);
         updateCoverToggle();
         hideSystemBars();
         updatePointerCapture();
@@ -1051,7 +1132,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 }
                 @Override public void onEditShortcuts() { showShortcuts(SCREEN_SETTINGS); }
                 @Override public void onHudChanged() {
-                    hud.setVisibility(Prefs.showHud(prefs) ? View.VISIBLE : View.GONE);
+                    hud.setVisibility(!theatre && Prefs.showHud(prefs) ? View.VISIBLE : View.GONE);
                 }
             }, () -> showScreen(SCREEN_HOME));
             // Added below the lock overlay so locking still covers it.
@@ -1133,6 +1214,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             finish();
             return;
         }
+        if (theatre) {
+            setTheatre(false);
+            return;
+        }
+        if (screen == SCREEN_SETTINGS && settingsView.up()) return;
         // The shortcut editor opened from the bar should hand the desktop back.
         showScreen(screen == SCREEN_SHORTCUTS ? shortcutsReturnTo : SCREEN_HOME);
     }
@@ -1188,14 +1274,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         endpoints.choose(new Endpoints.Listener() {
             @Override public void onChosen(Endpoints.Route route) {
                 if (generation != streamGeneration || !wantStream) return;
-                host = route.host;
-                port = route.port;
-                prefs.edit().putString(Prefs.HOST, host).putInt(Prefs.PORT, port).apply();
-                MainActivity.this.route = route.which;
-                home.setRoute(route.which);
                 home.setState(HomeView.PHASE_CONNECTING, route.describe());
-                if (settingsView != null) settingsView.setAddress(host, port);
-                startStreamIfReady();
+                useRoute(route);
             }
 
             @Override public void onNothingReachable() {
@@ -1226,6 +1306,66 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                         + "host running on the laptop?";
     }
 
+    /**
+     * Re-measure both routes under a running retry loop. Switch only if the
+     * other address answers; otherwise (host restarting, no signal) leave the
+     * loop redialling as before.
+     */
+    private void reroute(int generation) {
+        endpoints.choose(new Endpoints.Listener() {
+            @Override public void onChosen(Endpoints.Route r) {
+                if (generation != streamGeneration || !wantStream || r.host.equals(host)) return;
+                useRoute(r);
+            }
+
+            @Override public void onNothingReachable() { }
+        });
+    }
+
+    private void useRoute(Endpoints.Route r) {
+        host = r.host;
+        port = r.port;
+        prefs.edit().putString(Prefs.HOST, host).putInt(Prefs.PORT, port).apply();
+        route = r.which;
+        home.setRoute(r.which);
+        if (settingsView != null) settingsView.setAddress(host, port);
+        startStreamIfReady();
+        root.removeCallbacks(homeCheck);
+        if (route == Endpoints.AWAY && endpoints.hasBoth()) {
+            root.postDelayed(homeCheck, HOME_CHECK_MS);
+        }
+    }
+
+    private static final int HOME_CHECK_MS = 15_000;
+
+    /**
+     * On the tailnet but not on mobile data: is home Wi-Fi back? A live tailnet
+     * stream never drops on its own when it is, so without this it stays on the
+     * slower route until the next reconnect. Switches only when the home address
+     * presents this laptop's certificate, so someone else's 192.168.x device on
+     * a foreign Wi-Fi is never mistaken for it.
+     */
+    private final Runnable homeCheck = new Runnable() {
+        @Override public void run() {
+            if (!wantStream || route != Endpoints.AWAY || !endpoints.hasBoth()) return;
+            root.postDelayed(this, HOME_CHECK_MS);
+            if (locked || onMobileData()) return;
+            final int generation = streamGeneration;
+            final String awayHost = host;
+            final int awayPort = port;
+            new Thread(() -> {
+                String laptop = Secure.pinnedFingerprint(prefs, awayHost, awayPort);
+                if (!Secure.presents(endpoints.homeHost, endpoints.homePort, laptop, 1500)) return;
+                runOnUiThread(() -> {
+                    if (generation != streamGeneration || !wantStream
+                            || route != Endpoints.AWAY) return;
+                    useRoute(new Endpoints.Route(Endpoints.HOME,
+                            endpoints.homeHost, endpoints.homePort));
+                });
+            }, "folddeck-home-check").start();
+        }
+    };
+
     private void startStreamIfReady() {
         if (!wantStream || locked || holder == null || host == null) return;
         dropStream();
@@ -1251,6 +1391,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             applyPosture(false);
             videoPane.requestLayout();   // re-letterbox to the real aspect
         }));
+        stream.setMobileDataCheck(this::onMobileData);
         stream.setThemeListener(palette -> runOnUiThread(() -> {
             if (generation == streamGeneration) applyTheme(palette);
         }));
@@ -1259,6 +1400,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             public void onConnectFailing(int failures, String reason) {
                 runOnUiThread(() -> {
                     if (generation != streamGeneration) return;
+                    // A route that worked and now will not reopen is the phone
+                    // changing network (Wi-Fi -> mobile data): the LAN address is
+                    // gone for good, so measure both again instead of redialling it.
+                    // Only after this stream once opened, so a wrong address on a
+                    // fresh connect still gives up below.
+                    if (failures < FAILURES_BEFORE_GIVING_UP && stream != null && stream.everOpened
+                            && endpoints.hasBoth()) {
+                        reroute(generation);
+                    }
                     if (failures >= FAILURES_BEFORE_GIVING_UP) {
                         stopStreaming();
                         home.setState(HomeView.PHASE_ERROR, reason);
@@ -1434,12 +1584,59 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     protected void onResume() {
         super.onResume();
         requestMetaKey(true);
+        pinRefreshRate();
+        holdLowLatencyWifi(true);
     }
 
     @Override
     protected void onPause() {
         super.onPause();
         requestMetaKey(false);
+        holdLowLatencyWifi(false);
+    }
+
+    /**
+     * Keep the panel at its fastest mode while this window is up.
+     *
+     * Samsung's adaptive refresh watches how often the content changes; a
+     * desktop that redraws ~20 times a second dropped the panel to 20-24 Hz
+     * (measured 2026-10-26), so a new frame then waited up to ~42 ms for a
+     * refresh, and motion waited further for the panel to ramp back up. At
+     * 120 Hz -- twice the laptop's 60 -- every laptop frame lands on the next
+     * 8 ms refresh, evenly paced.
+     */
+    private void pinRefreshRate() {
+        android.view.Display d = getDisplay();
+        if (d == null) return;
+        android.view.Display.Mode cur = d.getMode(), best = cur;
+        for (android.view.Display.Mode m : d.getSupportedModes()) {
+            if (m.getPhysicalWidth() == cur.getPhysicalWidth()
+                    && m.getPhysicalHeight() == cur.getPhysicalHeight()
+                    && m.getRefreshRate() > best.getRefreshRate()) best = m;
+        }
+        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        if (lp.preferredDisplayModeId == best.getModeId()) return;
+        lp.preferredDisplayModeId = best.getModeId();
+        getWindow().setAttributes(lp);
+    }
+
+    private android.net.wifi.WifiManager.WifiLock wifiLock;
+
+    /**
+     * Wi-Fi power save batches incoming packets between beacons; a ping to the
+     * phone showed 7 ms typical with 30-50 ms spikes. The low-latency lock turns
+     * power save off while this app is in the foreground with the screen on
+     * (the system enforces both), which is exactly when it streams.
+     */
+    private void holdLowLatencyWifi(boolean on) {
+        if (wifiLock == null) {
+            android.net.wifi.WifiManager wm = getSystemService(android.net.wifi.WifiManager.class);
+            if (wm == null) return;
+            wifiLock = wm.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY,
+                    "folddeck:stream");
+            wifiLock.setReferenceCounted(false);
+        }
+        if (on) wifiLock.acquire(); else wifiLock.release();
     }
 
     @Override
@@ -1467,6 +1664,51 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        try {
+            getSystemService(android.net.ConnectivityManager.class)
+                    .unregisterNetworkCallback(networkWatch);
+        } catch (RuntimeException ignored) { }   // never registered
         if (stream != null) stream.stop();
     }
+
+    /**
+     * Mobile data, as the system routes traffic now. Behind Tailscale the active
+     * network is the VPN, which carries its underlying network's transports; if
+     * it does not, any Wi-Fi or Ethernet being up means that is what is in use.
+     */
+    private boolean onMobileData() {
+        android.net.ConnectivityManager cm = getSystemService(android.net.ConnectivityManager.class);
+        if (cm == null) return false;
+        android.net.NetworkCapabilities c = cm.getNetworkCapabilities(cm.getActiveNetwork());
+        int cell = android.net.NetworkCapabilities.TRANSPORT_CELLULAR,
+                wifi = android.net.NetworkCapabilities.TRANSPORT_WIFI,
+                eth = android.net.NetworkCapabilities.TRANSPORT_ETHERNET;
+        if (c != null && (c.hasTransport(cell) || c.hasTransport(wifi) || c.hasTransport(eth))) {
+            return c.hasTransport(cell) && !c.hasTransport(wifi) && !c.hasTransport(eth);
+        }
+        for (android.net.Network n : cm.getAllNetworks()) {
+            android.net.NetworkCapabilities nc = cm.getNetworkCapabilities(n);
+            if (nc != null && (nc.hasTransport(wifi) || nc.hasTransport(eth))) return false;
+        }
+        return true;
+    }
+
+    private volatile boolean lastMobile;
+
+    /**
+     * A tailnet stream survives the phone moving from someone's Wi-Fi to mobile
+     * data (same tailnet IP, no reconnect), so the quality has to follow the
+     * network mid-stream, not only at connect.
+     */
+    private final android.net.ConnectivityManager.NetworkCallback networkWatch =
+            new android.net.ConnectivityManager.NetworkCallback() {
+                @Override public void onCapabilitiesChanged(android.net.Network n,
+                        android.net.NetworkCapabilities caps) {
+                    boolean mobile = onMobileData();
+                    if (mobile == lastMobile) return;   // signal-strength churn
+                    lastMobile = mobile;
+                    H264Stream s = stream;
+                    if (s != null) s.sendNetwork(mobile);
+                }
+            };
 }

@@ -149,6 +149,7 @@ class PointerPad extends View {
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            requestUnbufferedDispatch(event);   // touches as they happen, not per frame
             touchGate.onDown();
         } else if (touchGate.ignoreNonDown()) {
             return true;
@@ -344,10 +345,6 @@ class PointerPad extends View {
         buttons.set(source, button, down);
     }
 
-    void releaseButtonSource(int source) {
-        buttons.releaseSource(source);
-    }
-
     private void cancelTouchGesture() {
         handler.removeCallbacks(longPress);
         buttons.releaseSource(PointerButtons.SOURCE_TOUCH);
@@ -491,6 +488,10 @@ class PointerPad extends View {
         super.onPointerCaptureChange(hasCapture);
         if (!hasCapture) {
             releaseHeld();
+        } else {
+            // A captured mouse reports relative motion (trackball class); take it
+            // unbatched too.
+            requestUnbufferedDispatch(android.view.InputDevice.SOURCE_CLASS_TRACKBALL);
         }
     }
 

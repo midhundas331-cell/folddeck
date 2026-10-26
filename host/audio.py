@@ -21,7 +21,7 @@ SINK = "folddeck"
 RATE, CHANNELS = 48000, 2
 BYTES_PER_SEC = RATE * CHANNELS * 2
 # ponytail: raw PCM is ~1.5 Mbps on top of the video; Opus if bandwidth matters away from home.
-MAX_BUFFERED = BYTES_PER_SEC // 4          # 250 ms; older audio is dropped, not queued
+MAX_BUFFERED = BYTES_PER_SEC // 10         # 100 ms; older audio is dropped, not queued
 AUDIO_UUID = b"FOLDDECK-AUDIO-1"           # 16 bytes, no zeros
 
 
@@ -66,7 +66,7 @@ def audio_nal(pcm: bytes) -> bytes:
 
 class AudioRoute:
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.Condition()
         # The input thread turns audio on; pump()'s teardown turns it off.
         self._state = threading.RLock()
         self._buf = bytearray()
@@ -94,7 +94,7 @@ class AudioRoute:
         _move_streams(None, SINK)
         self._proc = subprocess.Popen(
             ["parec", "-d", f"{SINK}.monitor", "--raw", "--format=s16le",
-             f"--rate={RATE}", f"--channels={CHANNELS}", "--latency-msec=20"],
+             f"--rate={RATE}", f"--channels={CHANNELS}", "--latency-msec=10"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
         threading.Thread(target=self._read, args=(self._proc,), name="audio",
                          daemon=True).start()
@@ -104,7 +104,7 @@ class AudioRoute:
     def _read(self, proc: subprocess.Popen) -> None:
         assert proc.stdout is not None
         while True:
-            chunk = proc.stdout.read(4096)
+            chunk = proc.stdout.read(1920)   # <= 10 ms per read
             if not chunk:
                 return
             with self._lock:
@@ -113,10 +113,15 @@ class AudioRoute:
                     # Keep whole frames so the channels never swap.
                     drop = len(self._buf) - MAX_BUFFERED
                     del self._buf[:drop - drop % 4]
+                self._lock.notify()
 
-    def take(self) -> bytes:
-        """Everything recorded since the last call, in whole frames."""
+    def take(self, timeout: float = 0) -> bytes:
+        """Everything recorded since the last call, in whole frames.
+
+        Waits up to `timeout` seconds for something to arrive."""
         with self._lock:
+            if len(self._buf) < 4 and timeout:
+                self._lock.wait(timeout)
             n = len(self._buf) - len(self._buf) % 4
             data = bytes(self._buf[:n])
             del self._buf[:n]

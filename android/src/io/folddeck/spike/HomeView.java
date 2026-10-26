@@ -9,13 +9,13 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 /**
- * The screen the app lands on after unlocking: where the laptop is, whether it
- * is reachable, and one button that connects to it.
+ * The screen the app lands on after unlocking, drawn as an Omarchy menu card:
+ * the connection (state, both routes and which one is in use) as one section,
+ * then the actions.
  *
  * It exists because the address used to be reachable only by long-pressing a
- * HUD that a single tap hid permanently — so a wrong address was a dead end you
- * could not steer out of without clearing app data. Everything the connection
- * needs is now on one screen, and Back always returns here.
+ * HUD that a single tap hid permanently — so a wrong address was a dead end.
+ * Everything the connection needs is on this one card, and Back returns here.
  */
 class HomeView extends FrameLayout {
 
@@ -31,23 +31,22 @@ class HomeView extends FrameLayout {
     static final int PHASE_IDLE = 0, PHASE_CONNECTING = 1, PHASE_STREAMING = 2,
             PHASE_ERROR = 3, PHASE_BLOCKED = 4, PHASE_FINDING = 5;
 
+    private static final String ICON_LAPTOP = "󰌢", ICON_WIFI = "󰖩",
+            ICON_TAILNET = "󰛳", ICON_CONNECT = "󰌘",
+            ICON_DISCONNECT = "󰌙", ICON_DESKTOP = "󰍹",
+            ICON_HELP = "󰘥", ICON_SETTINGS = "";
+
+    private final Context c;
     private final Listener listener;
-
-    private final TextView stateText;
-    private final TextView detailText;
+    private final TextView stateText, detailText;
     private final View stateDot;
-    /** All assigned by buildAddressCard(), which is called from the constructor. */
-    private TextView homeAddr, awayAddr, homeTag, awayTag;
-    private View homeDot, awayDot;
-    private View homeRow, awayRow;
-    private TextView addressEmpty;
-    private final TextView primary;
-    private final TextView disconnect;
-
+    private final LinearLayout homeRow, awayRow, addRow, primary, disconnect;
+    private final TextView homeAddr, awayAddr, homeTag, awayTag;
     private boolean streaming;
 
     HomeView(Context c, Listener listener) {
         super(c);
+        this.c = c;
         this.listener = listener;
         setBackgroundColor(Ui.BG);
         // Swallow touches: this sits over the live deck, and a tap falling
@@ -55,55 +54,61 @@ class HomeView extends FrameLayout {
         setClickable(true);
 
         LinearLayout col = Ui.readableColumn(c);
-        col.setPadding(Ui.dp(c, 24), Ui.dp(c, 28), Ui.dp(c, 24), Ui.dp(c, 28));
-
+        col.setPadding(Ui.dp(c, 20), Ui.dp(c, 28), Ui.dp(c, 20), Ui.dp(c, 28));
         col.addView(Ui.wordmark(c, 560));
-
         TextView tagline = Ui.text(c, "Your laptop, on the Fold", Ui.T_BODY, Ui.TEXT_DIM);
+        tagline.setTypeface(Ui.MONO);
         tagline.setPadding(0, Ui.dp(c, 14), 0, 0);
         col.addView(tagline);
 
-        // -------- status --------------------------------------------------- //
-        LinearLayout status = new LinearLayout(c);
-        status.setOrientation(LinearLayout.HORIZONTAL);
-        status.setGravity(Gravity.CENTER_VERTICAL);
-        status.setPadding(Ui.dp(c, 16), Ui.dp(c, 16), Ui.dp(c, 16), Ui.dp(c, 16));
-        status.setBackground(Ui.floatingPanel(Ui.SURFACE, Ui.LINE, 1, c));
-        Ui.elevate(status, c, Ui.FLOAT_LOW_DP);
+        LinearLayout card = new LinearLayout(c);
+        card.setOrientation(LinearLayout.VERTICAL);
+        col.addView(card, Ui.fillW(c, 0));
+        Ui.menuCard(card);
+        ((LinearLayout.LayoutParams) card.getLayoutParams()).setMargins(0, Ui.dp(c, 24), 0, 0);
 
+        // -------- connection ------------------------------------------------ //
+        card.addView(Ui.menuHeading(c, "Connection…"));
+
+        LinearLayout status = Ui.row(c, "Not Connected", "", null, null);
+        stateText = label(status);
+        detailText = (TextView) ((LinearLayout) status.getChildAt(0)).getChildAt(1);
+        detailText.setTypeface(Ui.MONO);
         stateDot = new View(c);
-        stateDot.setBackground(Ui.square(Ui.TEXT_FAINT));
-        LinearLayout.LayoutParams dotLp =
-                new LinearLayout.LayoutParams(Ui.dp(c, 10), Ui.dp(c, 10));
-        dotLp.rightMargin = Ui.dp(c, 12);
-        status.addView(stateDot, dotLp);
+        FrameLayout dotBox = new FrameLayout(c);
+        dotBox.addView(stateDot, new FrameLayout.LayoutParams(Ui.dp(c, 12), Ui.dp(c, 12),
+                Gravity.CENTER));
+        status.addView(dotBox, 0, new LinearLayout.LayoutParams(Ui.dp(c, 44), Ui.dp(c, 30)));
+        ((LinearLayout.LayoutParams) status.getChildAt(1).getLayoutParams()).leftMargin =
+                Ui.dp(c, 8);
+        card.addView(status);
 
-        LinearLayout statusStack = new LinearLayout(c);
-        statusStack.setOrientation(LinearLayout.VERTICAL);
-        stateText = Ui.text(c, "Not connected", Ui.T_BODY, Ui.TEXT);
-        detailText = Ui.text(c, "", Ui.T_LABEL, Ui.TEXT_DIM);
-        detailText.setPadding(0, Ui.dp(c, 3), 0, 0);
-        detailText.setVisibility(GONE);
-        statusStack.addView(stateText);
-        statusStack.addView(detailText);
-        status.addView(statusStack, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        addRow = Ui.menuItem(c, ICON_LAPTOP, "Add Your Laptop", listener::onEditAddress);
+        addSubtitle(addRow, "Tap to enter its address");
+        card.addView(addRow);
 
-        col.addView(status, Ui.fillW(c, 24));
+        homeAddr = Ui.text(c, "", Ui.T_LABEL, Ui.TEXT_FAINT);
+        awayAddr = Ui.text(c, "", Ui.T_LABEL, Ui.TEXT_FAINT);
+        homeTag = tag();
+        awayTag = tag();
+        homeRow = route(ICON_WIFI, "Home Wi-Fi", homeAddr, homeTag);
+        awayRow = route(ICON_TAILNET, "Tailscale", awayAddr, awayTag);
+        card.addView(homeRow);
+        card.addView(awayRow);
+        card.addView(Ui.menuNote(c, "Uses your home Wi-Fi when it can, and "
+                + "Tailscale everywhere else. Tap one to change it."));
 
-        // -------- address -------------------------------------------------- //
-        col.addView(Ui.sectionLabel(c, "Laptop"));
-        col.addView(buildAddressCard(c), Ui.fillW(c, 0));
+        // -------- actions --------------------------------------------------- //
+        card.addView(Ui.divider(c));
+        primary = Ui.menuItem(c, ICON_CONNECT, "Connect", this::onPrimary);
+        label(primary).setTextColor(Ui.pressedAccent(Ui.ACCENT));
+        card.addView(primary);
+        disconnect = Ui.menuItem(c, ICON_DISCONNECT, "Disconnect", listener::onDisconnect);
+        card.addView(disconnect);
 
-        // -------- actions -------------------------------------------------- //
-        primary = Ui.primaryButton(c, "Connect", this::onPrimary);
-        col.addView(primary, Ui.fillW(c, 24));
-
-        disconnect = Ui.secondaryButton(c, "Disconnect", listener::onDisconnect);
-        disconnect.setVisibility(GONE);
-        col.addView(disconnect, Ui.fillW(c, 10));
-
-        col.addView(buildLinkRow(c), Ui.fillW(c, 10));
+        card.addView(Ui.divider(c));
+        card.addView(Ui.menuItem(c, ICON_HELP, "How to Use", listener::onOpenGuide));
+        card.addView(Ui.menuItem(c, ICON_SETTINGS, "Settings", listener::onOpenSettings));
 
         // ScrollView because the cover screen in landscape is barely 1080px tall
         // and this column does not fit; without it the buttons are unreachable.
@@ -119,86 +124,34 @@ class HomeView extends FrameLayout {
         addView(scroll, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
 
         setEndpoints(null);
+        setState(PHASE_IDLE, null);
     }
 
-    /**
-     * The address gets its own card rather than a settings row: it is the one
-     * value that decides whether anything works at all.
-     *
-     * Both routes are shown at once, because "which network am I on" is the
-     * question this screen exists to answer and hiding one of them behind a
-     * tap is what made a wrong address hard to diagnose before.
-     */
-    private View buildAddressCard(Context c) {
-        LinearLayout card = new LinearLayout(c);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(Ui.dp(c, 16), Ui.dp(c, 14), Ui.dp(c, 16), Ui.dp(c, 14));
-        card.setBackground(Ui.pressable(Ui.floatingPanel(Ui.SURFACE, Ui.LINE, 1, c)));
-        Ui.elevate(card, c, Ui.FLOAT_MID_DP);
-        card.setClickable(true);
-        Motion.press(card);
-        card.setOnClickListener(v -> listener.onEditAddress());
-
-        addressEmpty = Ui.text(c, "Not set — tap to add", Ui.T_BODY, Ui.WARN);
-        card.addView(addressEmpty);
-
-        homeDot = new View(c);
-        awayDot = new View(c);
-        homeAddr = Ui.text(c, "", Ui.T_BODY, Ui.TEXT);
-        awayAddr = Ui.text(c, "", Ui.T_BODY, Ui.TEXT);
-        homeAddr.setTypeface(Ui.MONO);
-        awayAddr.setTypeface(Ui.MONO);
-        homeTag = Ui.text(c, "", Ui.T_MICRO, Ui.TEXT_FAINT);
-        awayTag = Ui.text(c, "", Ui.T_MICRO, Ui.TEXT_FAINT);
-
-        homeRow = routeRow(c, "Home Wi-Fi", homeDot, homeAddr, homeTag);
-        awayRow = routeRow(c, "Tailnet", awayDot, awayAddr, awayTag);
-        card.addView(homeRow, Ui.fillW(c, 0));
-        card.addView(awayRow, Ui.fillW(c, 10));
-
-        TextView change = Ui.text(c, "Change", Ui.T_LABEL, Ui.ACCENT);
-        change.setPadding(0, Ui.dp(c, 12), 0, 0);
-        card.addView(change);
-        return card;
-    }
-
-    /** One route: a state dot, its name, the address, and a right-aligned tag. */
-    private View routeRow(Context c, String name, View dot, TextView addr, TextView tag) {
-        LinearLayout row = new LinearLayout(c);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-
-        dot.setBackground(Ui.square(Ui.TEXT_FAINT));
-        LinearLayout.LayoutParams dotLp =
-                new LinearLayout.LayoutParams(Ui.dp(c, 8), Ui.dp(c, 8));
-        dotLp.rightMargin = Ui.dp(c, 10);
-        row.addView(dot, dotLp);
-
-        LinearLayout stack = new LinearLayout(c);
-        stack.setOrientation(LinearLayout.VERTICAL);
-        TextView label = Ui.text(c, name, Ui.T_LABEL, Ui.TEXT_DIM);
-        stack.addView(label);
-        stack.addView(addr);
-        row.addView(stack, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-
-        row.addView(tag);
+    /** One route: its icon and name, the address under it, "In Use" on the right. */
+    private LinearLayout route(String icon, String name, TextView addr, TextView tag) {
+        LinearLayout row = Ui.menuItem(c, icon, name, listener::onEditAddress);
+        addr.setTypeface(Ui.MONO);
+        ((LinearLayout) row.getChildAt(1)).addView(addr);
+        row.addView(tag, 2);
         return row;
     }
 
-    private View buildLinkRow(Context c) {
-        LinearLayout links = new LinearLayout(c);
-        links.setOrientation(LinearLayout.HORIZONTAL);
+    private TextView tag() {
+        TextView t = Ui.text(c, "", Ui.T_LABEL, Ui.OK);
+        t.setTypeface(Ui.MONO_BOLD);
+        return t;
+    }
 
-        LinearLayout.LayoutParams left =
-                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        LinearLayout.LayoutParams right =
-                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        right.leftMargin = Ui.dp(c, 10);
+    private void addSubtitle(LinearLayout row, String text) {
+        TextView t = Ui.text(c, text, Ui.T_LABEL, Ui.TEXT_FAINT);
+        t.setTypeface(Ui.MONO);
+        ((LinearLayout) row.getChildAt(1)).addView(t);
+    }
 
-        links.addView(Ui.secondaryButton(c, "How to use", listener::onOpenGuide), left);
-        links.addView(Ui.secondaryButton(c, "Settings", listener::onOpenSettings), right);
-        return links;
+    /** The title of a row from {@link Ui#row} or {@link Ui#menuItem}. */
+    private static TextView label(LinearLayout row) {
+        View stack = row.getChildAt(row.getChildAt(0) instanceof LinearLayout ? 0 : 1);
+        return (TextView) ((LinearLayout) stack).getChildAt(0);
     }
 
     private void onPrimary() {
@@ -208,15 +161,12 @@ class HomeView extends FrameLayout {
     // ------------------------------------------------------------------ //
     void setEndpoints(Endpoints e) {
         boolean any = e != null && e.isConfigured();
-        addressEmpty.setVisibility(any ? GONE : VISIBLE);
-        int rows = any ? VISIBLE : GONE;
-        homeRow.setVisibility(rows);
-        awayRow.setVisibility(rows);
+        addRow.setVisibility(any ? GONE : VISIBLE);
+        homeRow.setVisibility(any ? VISIBLE : GONE);
+        awayRow.setVisibility(any ? VISIBLE : GONE);
         if (!any) return;
-        homeAddr.setText(e.homeHost == null ? "not set" : EndpointText.format(e.homeHost, e.homePort));
-        awayAddr.setText(e.awayHost == null ? "not set" : EndpointText.format(e.awayHost, e.awayPort));
-        homeAddr.setTextColor(e.homeHost == null ? Ui.TEXT_FAINT : Ui.TEXT);
-        awayAddr.setTextColor(e.awayHost == null ? Ui.TEXT_FAINT : Ui.TEXT);
+        homeAddr.setText(e.homeHost == null ? "Not Set" : EndpointText.format(e.homeHost, e.homePort));
+        awayAddr.setText(e.awayHost == null ? "Not Set" : EndpointText.format(e.awayHost, e.awayPort));
         setRoute(-1);
     }
 
@@ -226,12 +176,8 @@ class HomeView extends FrameLayout {
      * @param which {@link Endpoints#HOME}, {@link Endpoints#AWAY}, or -1 for none
      */
     void setRoute(int which) {
-        homeDot.setBackground(Ui.square(which == Endpoints.HOME ? Ui.OK : Ui.TEXT_FAINT));
-        awayDot.setBackground(Ui.square(which == Endpoints.AWAY ? Ui.OK : Ui.TEXT_FAINT));
-        homeTag.setText(which == Endpoints.HOME ? "in use" : "");
-        awayTag.setText(which == Endpoints.AWAY ? "in use" : "");
-        homeTag.setTextColor(Ui.OK);
-        awayTag.setTextColor(Ui.OK);
+        homeTag.setText(which == Endpoints.HOME ? "In Use" : "");
+        awayTag.setText(which == Endpoints.AWAY ? "In Use" : "");
     }
 
     /**
@@ -243,23 +189,24 @@ class HomeView extends FrameLayout {
         streaming = phase == PHASE_STREAMING;
         if (phase == PHASE_IDLE || phase == PHASE_ERROR) setRoute(-1);
         int colour;
-        String label;
+        String text;
         switch (phase) {
-            case PHASE_STREAMING:  colour = Ui.OK;         label = "Connected";     break;
-            case PHASE_CONNECTING: colour = Ui.ACCENT;     label = "Connecting…";   break;
-            case PHASE_FINDING:    colour = Ui.ACCENT;     label = "Finding the laptop…"; break;
-            case PHASE_ERROR:      colour = Ui.ERR;        label = "Cannot reach the laptop"; break;
-            case PHASE_BLOCKED:    colour = Ui.ERR;        label = "Stopped for safety"; break;
-            default:               colour = Ui.TEXT_FAINT; label = "Not connected"; break;
+            case PHASE_STREAMING:  colour = Ui.OK;         text = "Connected";     break;
+            case PHASE_CONNECTING: colour = Ui.ACCENT;     text = "Connecting…";   break;
+            case PHASE_FINDING:    colour = Ui.ACCENT;     text = "Finding Your Laptop…"; break;
+            case PHASE_ERROR:      colour = Ui.ERR;        text = "Can't Reach Your Laptop"; break;
+            case PHASE_BLOCKED:    colour = Ui.ERR;        text = "Stopped for Safety"; break;
+            default:               colour = Ui.TEXT_FAINT; text = "Not Connected"; break;
         }
         stateDot.setBackground(Ui.square(colour));
         Motion.status(stateDot, phase);
-        stateText.setText(label);
+        stateText.setText(text);
         stateText.setTextColor(phase == PHASE_IDLE ? Ui.TEXT : colour);
         detailText.setText(detail == null ? "" : detail);
         detailText.setVisibility(detail == null || detail.isEmpty() ? GONE : VISIBLE);
 
-        primary.setText(streaming ? "Return to desktop" : "Connect");
+        label(primary).setText(streaming ? "Return to Desktop" : "Connect");
+        ((TextView) primary.getChildAt(0)).setText(streaming ? ICON_DESKTOP : ICON_CONNECT);
         disconnect.setVisibility(streaming ? VISIBLE : GONE);
     }
 }

@@ -8,7 +8,7 @@ public class StreamBoundsCheck {
 
     private static void rejected(int current, int needed) {
         try {
-            H264Stream.grownCapacity(current, needed);
+            AnnexB.grownCapacity(current, needed);
             throw new AssertionError("accepted oversized stream buffer");
         } catch (IllegalArgumentException expected) {
             // expected
@@ -25,10 +25,10 @@ public class StreamBoundsCheck {
     }
 
     public static void main(String[] args) {
-        check(H264Stream.grownCapacity(1024, 1024) == 1024, "no growth when capacity is enough");
-        check(H264Stream.grownCapacity(1024, 1025) == 2048, "capacity doubles");
-        check(H264Stream.grownCapacity(1024, 3000) == 3000, "large read grows directly");
-        rejected(H264Stream.MAX_STREAM_BUFFER, H264Stream.MAX_STREAM_BUFFER + 1);
+        check(AnnexB.grownCapacity(1024, 1024) == 1024, "no growth when capacity is enough");
+        check(AnnexB.grownCapacity(1024, 1025) == 2048, "capacity doubles");
+        check(AnnexB.grownCapacity(1024, 3000) == 3000, "large read grows directly");
+        rejected(AnnexB.MAX_STREAM_BUFFER, AnnexB.MAX_STREAM_BUFFER + 1);
         rejected(1024, Integer.MAX_VALUE);
 
         check(H264Stream.nextAccessUnitBytes(0, 100, 0) == 104,

@@ -2,19 +2,22 @@ package io.folddeck.spike;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.graphics.drawable.GradientDrawable;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
 /**
- * Settings.
+ * Settings, laid out the way iOS Settings is: a card for the laptop, then a
+ * grouped list of categories with coloured icon tiles, each opening a page of
+ * rounded groups. Rows carry short names only; what a setting does is said
+ * once, in the small note under its group.
  *
- * Two of these rows are recovery paths that previously did not exist anywhere,
- * and their absence was the app's worst failure mode: a changed host
- * certificate stopped the client permanently with no way to re-pin, and the
- * only route out was clearing app data — which also regenerated the client
- * token, so the host then refused the device as unknown. Both ends of that trap
- * are openable from here now.
+ * Two rows are recovery paths that once did not exist: a reinstalled host
+ * changed its certificate and the client stopped for good, with clearing app
+ * data (and so losing the pairing) the only way out. Both live under
+ * Lock & Security now.
  */
 class SettingsView extends Panel {
 
@@ -29,376 +32,356 @@ class SettingsView extends Panel {
         void onEditShortcuts();
     }
 
-    private final TextView addressValue;
+    private final Context c;
+    private final SharedPreferences prefs;
+    private final Listener listener;
+    private final LinearLayout menu;
+    private final TextView addressValue, cardAddress;
+    private LinearLayout openPage;
 
     SettingsView(Context c, SharedPreferences prefs, Lock lock,
                  Listener listener, Runnable onBack) {
         super(c, "Settings", onBack);
+        this.c = c;
+        this.prefs = prefs;
+        this.listener = listener;
 
-        LinearLayout body = content();
+        // Omarchy's menu card: a square frame with a 2px border round the list.
+        LinearLayout frame = content();
+        Ui.menuCard(frame);
 
-        // -------- connection ----------------------------------------------- //
-        body.addView(Ui.sectionLabel(c, "Connection"));
+        menu = new LinearLayout(c);
+        menu.setOrientation(LinearLayout.VERTICAL);
+        frame.addView(menu);
+        menu.addView(Ui.menuHeading(c, "Settings…"));
 
-        addressValue = Ui.text(c, "", Ui.T_LABEL, Ui.ACCENT);
-        body.addView(Ui.row(c, "Laptop address",
-                "Where the host is listening", addressValue, listener::onEditAddress),
-                Ui.fillW(c, 6));
+        // -------- the laptop -------------------------------------------------- //
+        cardAddress = Ui.text(c, "", Ui.T_LABEL, Ui.TEXT_FAINT);
+        LinearLayout laptop = Ui.menuItem(c, "\udb80\udf22", "FoldDeck", listener::onEditAddress);
+        ((LinearLayout) laptop.getChildAt(1)).addView(cardAddress);
+        TextView build = Ui.text(c, version(c), Ui.T_LABEL, Ui.TEXT_FAINT);
+        ((LinearLayout) laptop.getChildAt(1)).addView(build);
+        cardAddress.setTypeface(Ui.MONO);
+        build.setTypeface(Ui.MONO);
+        menu.addView(laptop);
+        menu.addView(Ui.divider(c));
 
-        body.addView(Ui.row(c, "Connect after unlocking",
-                "Skip this screen and go straight to the desktop",
-                Ui.toggle(c, Prefs.autoConnect(prefs),
-                        on -> Prefs.putBool(prefs, Prefs.AUTO_CONNECT, on)),
-                null),
-                Ui.fillW(c, 8));
+        // -------- categories ------------------------------------------------- //
+        LinearLayout connection = page("Connection");
+        LinearLayout screen = page("Display");
+        LinearLayout keyboard = page("Keyboard");
+        LinearLayout trackpad = page("Trackpad");
+        LinearLayout shortcuts = page("Shortcuts");
+        LinearLayout mouse = page("Mouse");
+        LinearLayout security = page("Lock & Security");
+        menu.addView(category("\udb81\udef3", "Connection", connection));
+        menu.addView(category("\udb80\udf79", "Display", screen));
+        menu.addView(category("\uf11c", "Keyboard", keyboard));
+        menu.addView(category("\udb81\udf41", "Trackpad", trackpad));
+        menu.addView(category("\udb80\udf7d", "Mouse", mouse));
+        menu.addView(category("\udb80\udc3b", "Shortcuts", shortcuts));
+        menu.addView(category("\ueb11", "Lock & Security", security));
 
-        body.addView(Ui.row(c, "Play laptop audio here",
-                "While connected the laptop's sound comes out of the phone and its "
-                        + "speakers go quiet",
-                Ui.toggle(c, Prefs.laptopAudio(prefs), on -> {
+        // -------- Connection ------------------------------------------------- //
+        addressValue = value("");
+        connection.addView(group(null,
+                "When Connect Automatically is on, unlocking the app takes you "
+                        + "straight to your laptop.",
+                Ui.row(c, "Laptop", null, withChevron(addressValue), listener::onEditAddress),
+                toggle("Connect Automatically", Prefs.autoConnect(prefs),
+                        on -> Prefs.putBool(prefs, Prefs.AUTO_CONNECT, on))));
+        connection.addView(group(null,
+                "Plays your laptop's sound on this phone. The laptop's speakers "
+                        + "stay quiet while you're connected.",
+                toggle("Play Sound on Phone", Prefs.laptopAudio(prefs), on -> {
                     Prefs.putBool(prefs, Prefs.LAPTOP_AUDIO, on);
                     listener.onAudioChanged(on);
-                }),
-                null),
-                Ui.fillW(c, 8));
+                })));
 
-        // -------- appearance ------------------------------------------------ //
-        body.addView(Ui.sectionLabel(c, "Appearance"));
-
-        body.addView(Ui.row(c, "Laptop layout when unfolded",
-                "Hinge and bezels frame a full-width desktop above adaptive controls",
-                Ui.toggle(c, Prefs.laptopLayout(prefs), on -> {
-                    Prefs.putBool(prefs, Prefs.LAPTOP_LAYOUT, on);
-                    listener.onControlsChanged();
-                }),
-                null),
-                Ui.fillW(c, 6));
-
-        body.addView(Ui.row(c, "Hide keyboard when one is connected",
-                "A Bluetooth or USB keyboard types on the laptop, and the desktop "
-                        + "and shortcuts take the space",
-                Ui.toggle(c, Prefs.hideKeyboard(prefs), on -> {
-                    Prefs.putBool(prefs, Prefs.HIDE_KEYBOARD, on);
-                    listener.onControlsChanged();
-                }),
-                null),
-                Ui.fillW(c, 6));
-
-        body.addView(Ui.row(c, "Tactile key feedback",
-                "A quiet vibration on keyboard and trackpad-button presses",
-                Ui.toggle(c, Prefs.keyboardHaptics(prefs), on -> {
-                    Prefs.putBool(prefs, Prefs.KEYBOARD_HAPTICS, on);
-                    listener.onControlsChanged();
-                }), null), Ui.fillW(c, 6));
-
-        body.addView(Ui.row(c, "Statistics overlay",
-                "Bitrate, frame counts and decode latency over the video",
-                Ui.toggle(c, Prefs.showHud(prefs), on -> {
-                    Prefs.putBool(prefs, Prefs.SHOW_HUD, on);
-                    listener.onHudChanged();
-                }),
-                null),
-                Ui.fillW(c, 8));
-
-        body.addView(Ui.row(c, "Shortcuts",
-                "The Omarchy shortcut bar beside the desktop: edit, add, delete",
-                null, listener::onEditShortcuts),
-                Ui.fillW(c, 8));
-
-        // -------- layout ---------------------------------------------------- //
-        body.addView(Ui.sectionLabel(c, "Layout"));
-
-        String[] presets = {"Keys + pad", "Keys", "Pad", "Monitor"};
-        String[][] postures = {
-                {"Cover screen", "What the corner button reveals; Monitor hides the button"},
-                {"Unfolded, landscape", "Below the desktop when the phone is open sideways"},
-                {"Unfolded, portrait", "Below the desktop when the phone is open upright"}};
+        // -------- Display ---------------------------------------------------- //
+        String[] presets = {"Both", "Keys", "Pad", "None", "Split"};
+        String[] postures = {"Folded", "Open, Sideways", "Open, Upright"};
+        View[] postureRows = new View[postures.length];
         for (int i = 0; i < postures.length; i++) {
             final int posture = i;
-            body.addView(Ui.row(c, postures[i][0], postures[i][1],
-                    Ui.choice(c, presets, Prefs.layout(prefs, posture), v -> {
-                        prefs.edit().putInt(Prefs.LAYOUT_KEYS[posture], v).apply();
-                        listener.onControlsChanged();
-                    }), null), Ui.fillW(c, 6));
+            postureRows[i] = choice(postures[i], presets, Prefs.layout(prefs, posture),
+                    v -> prefs.edit().putInt(Prefs.LAYOUT_KEYS[posture], v).apply());
         }
+        screen.addView(group("Controls Below the Screen",
+                "Choose the keyboard, the trackpad, both, or none. Split puts the "
+                        + "trackpad between two halves of the keyboard. When folded, "
+                        + "None hides the corner button.",
+                postureRows));
+        screen.addView(group("Laptop Screen",
+                "Laptop Frame draws the screen full width across the top, like a "
+                        + "laptop lid.",
+                choice("Position", new String[]{"Start", "Middle", "End"},
+                        Prefs.desktopAlign(prefs),
+                        v -> prefs.edit().putInt(Prefs.DESKTOP_ALIGN, v).apply()),
+                control("Laptop Frame", Prefs.laptopLayout(prefs), Prefs.LAPTOP_LAYOUT)));
+        screen.addView(group(null,
+                "Shows connection speed and delay over the screen.",
+                toggle("Connection Info", Prefs.showHud(prefs), on -> {
+                    Prefs.putBool(prefs, Prefs.SHOW_HUD, on);
+                    listener.onHudChanged();
+                })));
 
-        body.addView(Ui.row(c, "Desktop position",
-                "Where the desktop sits when there is spare room around it",
-                Ui.choice(c, new String[]{"Start", "Centre", "End"}, Prefs.desktopAlign(prefs),
-                        v -> {
-                            prefs.edit().putInt(Prefs.DESKTOP_ALIGN, v).apply();
+        // -------- Keyboard --------------------------------------------------- //
+        keyboard.addView(group("Size",
+                "A larger keyboard leaves less room for the laptop screen.",
+                slider("Keyboard Size", Prefs.controlScale(prefs),
+                        Prefs.CONTROL_SCALE_MIN, Prefs.CONTROL_SCALE_MAX, false,
+                        v -> prefs.edit().putFloat(Prefs.CONTROL_SCALE, v).apply()),
+                slider("Text Size", Prefs.keyLabelScale(prefs),
+                        Prefs.KEY_LABEL_MIN, Prefs.KEY_LABEL_MAX, false,
+                        v -> prefs.edit().putFloat(Prefs.KEY_LABEL_SCALE, v).apply()),
+                slider("Key Spacing", Prefs.keyGapScale(prefs),
+                        Prefs.KEY_GAP_MIN, Prefs.KEY_GAP_MAX, false,
+                        v -> prefs.edit().putFloat(Prefs.KEY_GAP_SCALE, v).apply())));
+        keyboard.addView(group("Keys",
+                "The pointing stick is the small red dot between G, H and B. "
+                        + "Push it to move the cursor.",
+                control("Function Keys", Prefs.showFnRow(prefs), Prefs.SHOW_FN_ROW),
+                control("Pointing Stick", Prefs.showTrackpoint(prefs), Prefs.SHOW_TRACKPOINT),
+                slider("Pointing Stick Speed", Prefs.trackpointSens(prefs),
+                        Prefs.TRACKPOINT_SENS_MIN, Prefs.TRACKPOINT_SENS_MAX, true,
+                        v -> prefs.edit().putFloat(Prefs.TRACKPOINT_SENS, v).apply())));
+        keyboard.addView(group(null,
+                "Hides this keyboard while a Bluetooth or USB keyboard is connected.",
+                control("Haptic Feedback", Prefs.keyboardHaptics(prefs), Prefs.KEYBOARD_HAPTICS),
+                control("Hide with Hardware Keyboard", Prefs.hideKeyboard(prefs),
+                        Prefs.HIDE_KEYBOARD)));
+
+        // -------- Trackpad --------------------------------------------------- //
+        trackpad.addView(group(null, null,
+                slider("Tracking Speed", Prefs.trackpadSens(prefs),
+                        Prefs.TRACKPAD_SENS_MIN, Prefs.TRACKPAD_SENS_MAX, true,
+                        v -> prefs.edit().putFloat(Prefs.TRACKPAD_SENS, v).apply()),
+                slider("Size", Prefs.trackpadSize(prefs),
+                        Prefs.TRACKPAD_SIZE_MIN, Prefs.TRACKPAD_SIZE_MAX, false,
+                        v -> prefs.edit().putFloat(Prefs.TRACKPAD_SIZE, v).apply())));
+        trackpad.addView(group("Point & Click",
+                "Tap with two fingers to right-click.",
+                control("Tap to Click", Prefs.trackpadTap(prefs), Prefs.TRACKPAD_TAP),
+                control("Left-Handed", Prefs.trackpadLeftHanded(prefs),
+                        Prefs.TRACKPAD_LEFT_HANDED)));
+        trackpad.addView(group("Scroll",
+                "Natural scrolling moves content the same way as your finger.",
+                control("Natural Scrolling", Prefs.naturalScroll(prefs), Prefs.NATURAL_SCROLL),
+                control("Scroll Strip", Prefs.trackpadScroll(prefs), Prefs.TRACKPAD_SCROLL)));
+        trackpad.addView(group("Side",
+                null,
+                control("Left Side When Sideways", Prefs.trackpadLeft(prefs, true),
+                        Prefs.TRACKPAD_LEFT_LANDSCAPE),
+                control("Left Side When Upright", Prefs.trackpadLeft(prefs, false),
+                        Prefs.TRACKPAD_LEFT_PORTRAIT)));
+        trackpad.addView(group(null,
+                "Drag anywhere on the laptop screen to move the cursor, instead "
+                        + "of tapping exactly where you want to click.",
+                toggle("Screen Works as Trackpad",
+                        Prefs.pointerMode(prefs) == PointerPad.MODE_TRACKPAD, on -> {
+                            prefs.edit().putInt(Prefs.POINTER_MODE,
+                                    on ? PointerPad.MODE_TRACKPAD : PointerPad.MODE_DIRECT).apply();
                             listener.onControlsChanged();
-                        }), null), Ui.fillW(c, 6));
+                        })));
 
-        TextView scaleValue = Ui.text(c, percentLabel(Prefs.controlScale(prefs)),
-                Ui.T_LABEL, Ui.ACCENT);
-        LinearLayout scale = sliderRow(c, "Keyboard height", scaleValue,
-                Ui.slider(c, Prefs.controlScale(prefs), Prefs.CONTROL_SCALE_MIN,
-                        Prefs.CONTROL_SCALE_MAX, value -> {
-                            scaleValue.setText(percentLabel(value));
-                            prefs.edit().putFloat(Prefs.CONTROL_SCALE, value).apply();
-                            listener.onControlsChanged();
-                        }));
-        body.addView(Ui.row(c, "Keyboard height",
-                "How much of the screen the keyboard and trackpad take from the desktop",
-                scale, null), Ui.fillW(c, 6));
+        // -------- Mouse ------------------------------------------------------ //
+        mouse.addView(group(null,
+                "Press both mouse buttons together to switch the mouse between "
+                        + "your laptop and this phone.",
+                slider("Tracking Speed", Prefs.mouseSens(prefs),
+                        Prefs.MOUSE_SENS_MIN, Prefs.MOUSE_SENS_MAX, true, v -> {
+                            prefs.edit().putFloat(Prefs.MOUSE_SENS, v).apply();
+                            listener.onMouseSensitivity(v);
+                        }),
+                control("Use with Laptop", Prefs.mouseAutoCapture(prefs),
+                        Prefs.MOUSE_AUTO_CAPTURE)));
 
-        TextView padSizeValue = Ui.text(c, percentLabel(Prefs.trackpadSize(prefs)),
-                Ui.T_LABEL, Ui.ACCENT);
-        LinearLayout padSize = sliderRow(c, "Trackpad size", padSizeValue,
-                Ui.slider(c, Prefs.trackpadSize(prefs), Prefs.TRACKPAD_SIZE_MIN,
-                        Prefs.TRACKPAD_SIZE_MAX, value -> {
-                            padSizeValue.setText(percentLabel(value));
-                            prefs.edit().putFloat(Prefs.TRACKPAD_SIZE, value).apply();
-                            listener.onControlsChanged();
-                        }));
-        body.addView(Ui.row(c, "Trackpad size",
-                "Width beside the keyboard, or height below it", padSize, null),
-                Ui.fillW(c, 6));
+        // -------- Shortcuts -------------------------------------------------- //
+        shortcuts.addView(group(null,
+                "Buttons beside the laptop screen that open apps and run "
+                        + "Omarchy actions with one tap.",
+                Ui.row(c, "Edit Shortcuts", null, chevron(), listener::onEditShortcuts),
+                control("Show Shortcuts", Prefs.showShortcuts(prefs), Prefs.SHOW_SHORTCUTS),
+                control("Swap Side", Prefs.shortcutsFlip(prefs), Prefs.SHORTCUTS_FLIP)));
 
-        body.addView(Ui.row(c, "Trackpad on the left in landscape",
-                "Off puts it to the right of the keyboard",
-                Ui.toggle(c, Prefs.trackpadLeft(prefs, true), on -> {
-                    Prefs.putBool(prefs, Prefs.TRACKPAD_LEFT_LANDSCAPE, on);
-                    listener.onControlsChanged();
-                }), null), Ui.fillW(c, 6));
+        // -------- Lock & Security -------------------------------------------- //
+        security.addView(group(null,
+                "Your PIN always works too.",
+                toggle("Unlock with Fingerprint", lock.biometricEnabled(),
+                        lock::setBiometricEnabled),
+                Ui.row(c, "Change PIN", null, chevron(), listener::onChangePin)));
+        LinearLayout reset = Ui.row(c, "Reset Laptop Trust", null, null,
+                listener::onForgetHostCertificate);
+        ((TextView) ((LinearLayout) reset.getChildAt(0)).getChildAt(0)).setTextColor(Ui.ERR);
+        security.addView(group(null,
+                "Only needed after reinstalling FoldDeck on your laptop. Do it on "
+                        + "your home Wi-Fi. Everything between your phone and laptop "
+                        + "is encrypted.",
+                reset));
 
-        body.addView(Ui.row(c, "Trackpad on the left in portrait",
-                "Off puts it to the right of the shortcut shelf",
-                Ui.toggle(c, Prefs.trackpadLeft(prefs, false), on -> {
-                    Prefs.putBool(prefs, Prefs.TRACKPAD_LEFT_PORTRAIT, on);
-                    listener.onControlsChanged();
-                }), null), Ui.fillW(c, 6));
-
-        body.addView(Ui.row(c, "Shortcut bar",
-                "The Omarchy shortcut buttons beside or below the desktop",
-                Ui.toggle(c, Prefs.showShortcuts(prefs), on -> {
-                    Prefs.putBool(prefs, Prefs.SHOW_SHORTCUTS, on);
-                    listener.onControlsChanged();
-                }), null), Ui.fillW(c, 6));
-
-        body.addView(Ui.row(c, "Shortcut bar on the other side",
-                "Right of the desktop instead of left, above it instead of below",
-                Ui.toggle(c, Prefs.shortcutsFlip(prefs), on -> {
-                    Prefs.putBool(prefs, Prefs.SHORTCUTS_FLIP, on);
-                    listener.onControlsChanged();
-                }), null), Ui.fillW(c, 8));
-
-        // -------- keyboard -------------------------------------------------- //
-        body.addView(Ui.sectionLabel(c, "Keyboard"));
-
-        TextView labelValue = Ui.text(c, percentLabel(Prefs.keyLabelScale(prefs)),
-                Ui.T_LABEL, Ui.ACCENT);
-        LinearLayout labelSize = sliderRow(c, "Key label size", labelValue,
-                Ui.slider(c, Prefs.keyLabelScale(prefs), Prefs.KEY_LABEL_MIN,
-                        Prefs.KEY_LABEL_MAX, value -> {
-                            labelValue.setText(percentLabel(value));
-                            prefs.edit().putFloat(Prefs.KEY_LABEL_SCALE, value).apply();
-                            listener.onControlsChanged();
-                        }));
-        body.addView(Ui.row(c, "Key label size", "The letters printed on the keys",
-                labelSize, null), Ui.fillW(c, 6));
-
-        TextView gapValue = Ui.text(c, percentLabel(Prefs.keyGapScale(prefs)),
-                Ui.T_LABEL, Ui.ACCENT);
-        LinearLayout gapSize = sliderRow(c, "Key spacing", gapValue,
-                Ui.slider(c, Prefs.keyGapScale(prefs), Prefs.KEY_GAP_MIN,
-                        Prefs.KEY_GAP_MAX, value -> {
-                            gapValue.setText(percentLabel(value));
-                            prefs.edit().putFloat(Prefs.KEY_GAP_SCALE, value).apply();
-                            listener.onControlsChanged();
-                        }));
-        body.addView(Ui.row(c, "Key spacing", "The gap between keys",
-                gapSize, null), Ui.fillW(c, 6));
-
-        body.addView(Ui.row(c, "TrackPoint",
-                "The red pointing nub between G, H and B",
-                Ui.toggle(c, Prefs.showTrackpoint(prefs), on -> {
-                    Prefs.putBool(prefs, Prefs.SHOW_TRACKPOINT, on);
-                    listener.onControlsChanged();
-                }), null), Ui.fillW(c, 6));
-
-        body.addView(Ui.row(c, "Function key row",
-                "Esc, F1-F12, PrtSc, Ins and Del; off gives the other rows more height",
-                Ui.toggle(c, Prefs.showFnRow(prefs), on -> {
-                    Prefs.putBool(prefs, Prefs.SHOW_FN_ROW, on);
-                    listener.onControlsChanged();
-                }), null), Ui.fillW(c, 8));
-
-        // -------- touch and trackpad ---------------------------------------- //
-        body.addView(Ui.sectionLabel(c, "Touch & trackpad"));
-
-        body.addView(Ui.row(c, "Tap to click",
-                "Tap the dedicated pad to left-click; tap with two fingers to right-click",
-                Ui.toggle(c, Prefs.trackpadTap(prefs), on -> {
-                    Prefs.putBool(prefs, Prefs.TRACKPAD_TAP, on);
-                    listener.onControlsChanged();
-                }), null), Ui.fillW(c, 6));
-
-        body.addView(Ui.row(c, "Scroll rail",
-                "Theme-matched scrolling strip beside the dedicated pad",
-                Ui.toggle(c, Prefs.trackpadScroll(prefs), on -> {
-                    Prefs.putBool(prefs, Prefs.TRACKPAD_SCROLL, on);
-                    listener.onControlsChanged();
-                }), null), Ui.fillW(c, 6));
-
-        body.addView(Ui.row(c, "Natural scrolling",
-                "Dragging down moves the page content down",
-                Ui.toggle(c, Prefs.naturalScroll(prefs), on -> {
-                    Prefs.putBool(prefs, Prefs.NATURAL_SCROLL, on);
-                    listener.onControlsChanged();
-                }), null), Ui.fillW(c, 6));
-
-        body.addView(Ui.row(c, "Left-handed buttons",
-                "Swaps the dedicated trackpad's left and right zones",
-                Ui.toggle(c, Prefs.trackpadLeftHanded(prefs), on -> {
-                    Prefs.putBool(prefs, Prefs.TRACKPAD_LEFT_HANDED, on);
-                    listener.onControlsChanged();
-                }), null), Ui.fillW(c, 6));
-
-
-        body.addView(Ui.row(c, "Touchscreen trackpad mode",
-                "Finger movement over the desktop is relative instead of direct",
-                Ui.toggle(c, Prefs.pointerMode(prefs) == PointerPad.MODE_TRACKPAD, on -> {
-                    prefs.edit().putInt(Prefs.POINTER_MODE,
-                            on ? PointerPad.MODE_TRACKPAD : PointerPad.MODE_DIRECT).apply();
-                    listener.onControlsChanged();
-                }), null), Ui.fillW(c, 6));
-
-        TextView padSpeedValue = Ui.text(c, speedLabel(Prefs.trackpadSens(prefs)),
-                Ui.T_LABEL, Ui.ACCENT);
-        LinearLayout padSpeed = sliderRow(c, "Trackpad speed", padSpeedValue,
-                Ui.slider(c, Prefs.trackpadSens(prefs), Prefs.TRACKPAD_SENS_MIN,
-                        Prefs.TRACKPAD_SENS_MAX, value -> {
-                            padSpeedValue.setText(speedLabel(value));
-                            prefs.edit().putFloat(Prefs.TRACKPAD_SENS, value).apply();
-                            listener.onControlsChanged();
-                        }));
-        body.addView(Ui.row(c, "Trackpad speed",
-                "Cursor travel from the dedicated pad", padSpeed, null), Ui.fillW(c, 6));
-
-        TextView nubSpeedValue = Ui.text(c, speedLabel(Prefs.trackpointSens(prefs)),
-                Ui.T_LABEL, Ui.ACCENT);
-        LinearLayout nubSpeed = sliderRow(c, "TrackPoint speed", nubSpeedValue,
-                Ui.slider(c, Prefs.trackpointSens(prefs), Prefs.TRACKPOINT_SENS_MIN,
-                        Prefs.TRACKPOINT_SENS_MAX, value -> {
-                            nubSpeedValue.setText(speedLabel(value));
-                            prefs.edit().putFloat(Prefs.TRACKPOINT_SENS, value).apply();
-                            listener.onControlsChanged();
-                        }));
-        body.addView(Ui.row(c, "TrackPoint speed",
-                "Movement from the red keyboard nub", nubSpeed, null), Ui.fillW(c, 8));
-
-        // -------- mouse ------------------------------------------------------ //
-        body.addView(Ui.sectionLabel(c, "Mouse"));
-
-        TextView speedValue = Ui.text(c, speedLabel(Prefs.mouseSens(prefs)),
-                Ui.T_LABEL, Ui.ACCENT);
-        LinearLayout speed = new LinearLayout(c);
-        speed.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        speed.addView(speedValue);
-        View bar = Ui.slider(c, Prefs.mouseSens(prefs),
-                Prefs.MOUSE_SENS_MIN, Prefs.MOUSE_SENS_MAX, sens -> {
-                    speedValue.setText(speedLabel(sens));
-                    prefs.edit().putFloat(Prefs.MOUSE_SENS, sens).apply();
-                    listener.onMouseSensitivity(sens);
-                });
-        bar.setContentDescription("Pointer speed");
-        ((LinearLayout.LayoutParams) bar.getLayoutParams()).leftMargin = Ui.dp(c, 12);
-        speed.addView(bar);
-
-        body.addView(Ui.row(c, "Pointer speed",
-                "How far the cursor travels for a given movement of the mouse. "
-                        + "1.0x tracks the desktop image one-to-one.",
-                speed, null),
-                Ui.fillW(c, 6));
-
-        body.addView(Ui.row(c, "Capture Bluetooth mouse",
-                "Send it to the laptop while the desktop is visible; turn off to keep Android's pointer",
-                Ui.toggle(c, Prefs.mouseAutoCapture(prefs), on -> {
-                    Prefs.putBool(prefs, Prefs.MOUSE_AUTO_CAPTURE, on);
-                    listener.onControlsChanged();
-                }), null), Ui.fillW(c, 6));
-
-        TextView mouseNote = Ui.text(c,
-                "A Bluetooth mouse drives the laptop whenever the desktop is on "
-                        + "screen. Press left and right together to hand it back to the "
-                        + "phone, and again to take it back. On these settings screens "
-                        + "the mouse is Android's, and so is its speed — that one is in "
-                        + "Android Settings, under Accessibility.",
-                Ui.T_LABEL, Ui.TEXT_FAINT);
-        mouseNote.setPadding(Ui.dp(c, 4), Ui.dp(c, 8), Ui.dp(c, 4), 0);
-        body.addView(mouseNote);
-
-        // -------- security --------------------------------------------------- //
-        body.addView(Ui.sectionLabel(c, "Security"));
-
-        body.addView(Ui.row(c, "Unlock with fingerprint",
-                "PIN always works as well",
-                Ui.toggle(c, lock.biometricEnabled(), lock::setBiometricEnabled),
-                null),
-                Ui.fillW(c, 6));
-
-        body.addView(Ui.row(c, "Change PIN",
-                "You will be asked to set a new four-digit PIN",
-                null, listener::onChangePin),
-                Ui.fillW(c, 8));
-
-        body.addView(Ui.row(c, "Forget this laptop's certificate",
-                "Only if the host was reinstalled. The next connection trusts "
-                        + "whatever certificate answers, so do it on a network you trust.",
-                null, listener::onForgetHostCertificate),
-                Ui.fillW(c, 8));
-
-        // -------- about ------------------------------------------------------ //
-        body.addView(Ui.sectionLabel(c, "About"));
-        TextView about = Ui.text(c,
-                version(c) + "\n"
-                        + "Traffic is TLS 1.3 with the host's certificate pinned on first "
-                        + "connection. The PIN is an app lock, not disk encryption.",
-                Ui.T_LABEL, Ui.TEXT_FAINT);
-        about.setPadding(Ui.dp(c, 4), 0, Ui.dp(c, 4), 0);
-        body.addView(about);
+        // A page opens straight onto its first section, with no divider above it.
+        for (int i = 1; i < frame.getChildCount(); i++) {
+            ((LinearLayout) ((LinearLayout) frame.getChildAt(i)).getChildAt(1)).removeViewAt(0);
+        }
     }
 
+    // ------------------------------------------------------------------ //
+    // Paging
+    // ------------------------------------------------------------------ //
+    private LinearLayout page(String title) {
+        LinearLayout page = new LinearLayout(c);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setVisibility(GONE);
+        page.setTag(title);
+        page.addView(Ui.menuHeading(c, title + "…"));
+        content().addView(page);
+        return page;
+    }
+
+    private View category(String icon, String title, LinearLayout page) {
+        return Ui.menuItem(c, icon, title, () -> open(page));
+    }
+
+    private void open(LinearLayout page) {
+        menu.setVisibility(GONE);
+        page.setVisibility(VISIBLE);
+        openPage = page;
+        showPage((String) page.getTag());
+        Motion.enter(page);
+    }
+
+    @Override
+    boolean up() {
+        if (openPage == null) return false;
+        openPage.setVisibility(GONE);
+        openPage = null;
+        menu.setVisibility(VISIBLE);
+        showPage("Settings");
+        return true;
+    }
+
+    // ------------------------------------------------------------------ //
+    // Building blocks
+    // ------------------------------------------------------------------ //
+
     /**
-     * The running build, read from the package rather than written here.
-     *
-     * The version was a literal in this file and 1 in the manifest, which is
-     * two places to remember and therefore one place that goes stale. Asking
-     * the PackageManager means what Settings shows is what is actually
-     * installed, which is the only version worth reporting.
+     * A section of rows: a bold dim header, the rows flat on the card, and a
+     * note under them. Sections after the first open with Omarchy's divider.
      */
+    private LinearLayout group(String header, String footer, View... rows) {
+        LinearLayout wrap = new LinearLayout(c);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.addView(Ui.divider(c));
+        if (header != null) wrap.addView(Ui.menuSection(c, header));
+        for (View row : rows) {
+            wrap.addView(row, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        }
+        if (footer != null) wrap.addView(Ui.menuNote(c, footer));
+        return wrap;
+    }
+
+    /** A switch whose whole row is the touch target. */
+    private View toggle(String title, boolean on, java.util.function.Consumer<Boolean> onChange) {
+        View t = Ui.toggle(c, on, onChange);
+        return Ui.row(c, title, null, t, t::performClick);
+    }
+
+    /** The common case: a boolean pref that reshapes the deck. */
+    private View control(String title, boolean on, String key) {
+        return toggle(title, on, v -> {
+            Prefs.putBool(prefs, key, v);
+            listener.onControlsChanged();
+        });
+    }
+
+    private View choice(String title, String[] labels, int selected,
+                        java.util.function.IntConsumer onChange) {
+        View picker = Ui.choice(c, labels, selected, v -> {
+            onChange.accept(v);
+            listener.onControlsChanged();
+        });
+        picker.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        LinearLayout segments = (LinearLayout) picker;
+        for (int i = 0; i < segments.getChildCount(); i++) {
+            LinearLayout.LayoutParams lp =
+                    (LinearLayout.LayoutParams) segments.getChildAt(i).getLayoutParams();
+            lp.width = 0;
+            lp.weight = 1f;
+            segments.getChildAt(i).setPadding(0, 0, 0, 0);
+        }
+        return stacked(Ui.row(c, title, null, null, null), picker);
+    }
+
+    /** Name and value on one line, a full-width slider under them. */
+    private View slider(String title, float value, float min, float max,
+                        boolean speed, java.util.function.Consumer<Float> onChange) {
+        TextView label = value(format(value, speed));
+        View bar = Ui.slider(c, value, min, max, v -> {
+            label.setText(format(v, speed));
+            onChange.accept(v);
+            listener.onControlsChanged();
+        });
+        bar.setContentDescription(title);
+        bar.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, Ui.dp(c, 28)));
+        return stacked(Ui.row(c, title, null, label, null), bar);
+    }
+
+    /** A row with its control on a line of its own beneath. */
+    private View stacked(LinearLayout row, View below) {
+        LinearLayout box = new LinearLayout(c);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(row.getPaddingLeft(), row.getPaddingTop(),
+                row.getPaddingRight(), Ui.dp(c, 14));
+        row.setPadding(0, 0, 0, 0);
+        row.setMinimumHeight(Ui.dp(c, 32));
+        box.addView(row);
+        LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) below.getLayoutParams();
+        lp.topMargin = Ui.dp(c, 8);
+        box.addView(below, lp);
+        return box;
+    }
+
+    private TextView value(String text) {
+        TextView t = Ui.text(c, text, Ui.T_BODY, Ui.TEXT_FAINT);
+        t.setTypeface(Ui.MONO);
+        return t;
+    }
+
+    private View withChevron(TextView value) {
+        LinearLayout l = new LinearLayout(c);
+        l.setGravity(Gravity.CENTER_VERTICAL);
+        l.addView(value);
+        l.addView(chevron());
+        return l;
+    }
+
+    private TextView chevron() {
+        return Ui.chevron(c);
+    }
+
+    private static String format(float v, boolean speed) {
+        return speed ? String.format(java.util.Locale.US, "%.1f×", v) : Math.round(v * 100f) + "%";
+    }
+
+    /** The running build, read from the package so it is what is installed. */
     private static String version(Context c) {
         try {
             android.content.pm.PackageInfo p =
                     c.getPackageManager().getPackageInfo(c.getPackageName(), 0);
-            return "FoldDeck " + p.versionName + "  (build " + p.getLongVersionCode() + ")";
+            return "Version " + p.versionName;
         } catch (android.content.pm.PackageManager.NameNotFoundException e) {
-            return "FoldDeck";   // cannot happen: it is our own package
+            return "";   // cannot happen: it is our own package
         }
-    }
-
-    private static LinearLayout sliderRow(Context c, String label, TextView value, View slider) {
-        LinearLayout row = new LinearLayout(c);
-        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        row.addView(value);
-        slider.setContentDescription(label);
-        ((LinearLayout.LayoutParams) slider.getLayoutParams()).leftMargin = Ui.dp(c, 12);
-        row.addView(slider);
-        return row;
-    }
-
-    private static String percentLabel(float value) {
-        return Math.round(value * 100f) + "%";
-    }
-
-    private static String speedLabel(float sens) {
-        return String.format(java.util.Locale.US, "%.2fx", sens);
     }
 
     /** Called by the activity whenever the address changes underneath us. */
     void setAddress(String host, int port) {
-        addressValue.setText(host == null ? "Not set" : EndpointText.format(host, port));
+        addressValue.setText(host == null ? "Not Set" : host);
+        cardAddress.setText(host == null ? "No laptop set up"
+                : "Laptop at " + EndpointText.format(host, port));
     }
 }

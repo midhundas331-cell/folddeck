@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import datetime
 import os
-import secrets
 import ssl
 import stat
 import threading
@@ -188,10 +187,6 @@ def check_hello(blob: bytes, allow_new: bool, now: float | None = None) -> tuple
             authorize(token)
             return True, token, "NEW DEVICE PAIRED (trust-on-first-use)"
         return False, token, "unknown device -- rejected"
-
-
-def new_token() -> str:
-    return secrets.token_hex(TOKEN_BYTES)
 
 
 if __name__ == "__main__":

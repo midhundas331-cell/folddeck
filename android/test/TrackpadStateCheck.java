@@ -24,6 +24,14 @@ public class TrackpadStateCheck {
         check(state.scroll(25f, 42f, true) == 1, "accumulated natural scroll emits notch");
         state.resetScroll();
         check(state.scroll(42f, 42f, false) == -1, "reverse scroll changes sign");
+        state.resetScroll();
+        state.scroll(12f, 32f, true);
+        check(state.settle(32f) == 0, "under half a notch falls back into its detent");
+        state.scroll(17f, 32f, true);
+        check(state.settle(32f) == 1, "past half a notch clicks into the next detent");
+        state.scroll(-50f, 32f, true);
+        check(state.settle(32f) == -1, "detent pull follows direction");
+        check(state.settle(32f) == 0, "settle consumes the remainder");
         check(Math.abs(state.sensitivity(12f, 1.5f) - 18f) < 0.001f,
                 "trackpad sensitivity scales movement");
 

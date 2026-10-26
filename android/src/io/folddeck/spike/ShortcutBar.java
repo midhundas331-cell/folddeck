@@ -194,8 +194,8 @@ class ShortcutBar extends FrameLayout {
         t.setLineSpacing(0, 1f);
         int pad = Ui.dp(c, compact ? 3 : 10);
         t.setPadding(pad, 0, pad, 0);
-        t.setBackground(Ui.pressable(Ui.floatingPanel(Ui.SURFACE, Ui.LINE, 1, c)));
-        Ui.elevate(t, c, Ui.FLOAT_MID_DP);
+        // The same keycap as the keyboard and trackpad buttons: one deck, one look.
+        t.setBackground(Ui.cap(Ui.SURFACE_HI, Ui.LINE, c));
         Motion.press(t);
         t.setOnClickListener(onClick);
         return t;
@@ -206,9 +206,8 @@ class ShortcutBar extends FrameLayout {
         modeCell.setText(trackpad ? (compact ? "TRACK" : "TRACKPAD") : "DIRECT");
         modeCell.setTypeface(Ui.MONO_BOLD);
         modeCell.setTextColor(trackpad ? Ui.ACCENT : Ui.TEXT_DIM);
-        modeCell.setBackground(Ui.pressable(Ui.floatingPanel(
-                trackpad ? Ui.SELECTED : Ui.SURFACE, trackpad ? Ui.ACCENT : Ui.LINE, 1,
-                getContext())));
+        modeCell.setBackground(Ui.cap(trackpad ? Ui.SELECTED : Ui.SURFACE_HI,
+                trackpad ? Ui.ACCENT : Ui.LINE, getContext()));
     }
 
     @Override

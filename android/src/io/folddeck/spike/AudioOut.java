@@ -8,19 +8,22 @@ import android.media.AudioTrack;
  * Plays the laptop's audio: raw 48 kHz s16le stereo carried in SEI NALs.
  * See host/audio.py.
  *
- * Writes never block, because they happen on the video receive thread. When the
- * track's buffer is full the excess is dropped, which bounds latency at the
- * buffer size even if the two sound clocks drift apart.
+ * Writes never block, because they happen on the video receive thread.
+ *
+ * Latency is the depth of the track's queue, so the depth is steered rather
+ * than left to drift: a stall that drains it is padded back up to TARGET with
+ * silence (a cushion, so the next jitter spike does not crackle), and a queue
+ * that has crept past HIGH -- clock drift, a burst after a stall -- drops the
+ * incoming slice. Before, it only dropped once the 180 ms buffer was full.
  */
 final class AudioOut {
     static final byte[] UUID =
             "FOLDDECK-AUDIO-1".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
     private static final int RATE = 48000, FRAME = 4;
-    /** Start only once this much is queued, so network jitter does not crackle. */
-    private static final int PREBUFFER = RATE * FRAME * 60 / 1000;
+    static final int TARGET_MS = 40, HIGH_MS = 100;
 
     private AudioTrack track;
-    private int queued;
+    private long written;   // frames handed to the track
 
     /** The PCM in a FoldDeck audio SEI, unescaped, or null if this NAL is not one. */
     static byte[] pcmFrom(byte[] nal) {
@@ -51,6 +54,19 @@ final class AudioOut {
         return java.util.Arrays.copyOf(out, n - n % FRAME);
     }
 
+    /** Frames queued in the track and not yet played. */
+    private long queued() {
+        return written - (track.getPlaybackHeadPosition() & 0xFFFFFFFFL);
+    }
+
+    /** What to do with an incoming slice: frames of silence to add first, or -1 to drop it. */
+    static long steer(long queuedFrames, int sliceFrames) {
+        long target = RATE * TARGET_MS / 1000, high = RATE * HIGH_MS / 1000;
+        if (queuedFrames + sliceFrames > high) return -1;
+        if (queuedFrames <= RATE * 5 / 1000) return Math.max(0, target - sliceFrames - Math.max(0, queuedFrames));
+        return 0;
+    }
+
     void play(byte[] pcm) {
         if (pcm.length == 0) return;
         if (track == null) {
@@ -66,15 +82,20 @@ final class AudioOut {
                             .setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
                     .setTransferMode(AudioTrack.MODE_STREAM)
                     .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-                    .setBufferSizeInBytes(Math.max(min, PREBUFFER * 3))
+                    .setBufferSizeInBytes(Math.max(min, RATE * FRAME * HIGH_MS * 2 / 1000))
                     .build();
-            queued = 0;
+            written = 0;
+            track.play();
         }
-        int wrote = track.write(pcm, 0, pcm.length, AudioTrack.WRITE_NON_BLOCKING);
-        if (wrote > 0 && track.getPlayState() != AudioTrack.PLAYSTATE_PLAYING) {
-            queued += wrote;
-            if (queued >= PREBUFFER) track.play();
-        }
+        long pad = steer(queued(), pcm.length / FRAME);
+        if (pad < 0) return;
+        if (pad > 0) write(new byte[(int) pad * FRAME]);
+        write(pcm);
+    }
+
+    private void write(byte[] data) {
+        int wrote = track.write(data, 0, data.length, AudioTrack.WRITE_NON_BLOCKING);
+        if (wrote > 0) written += wrote / FRAME;
     }
 
     void release() {

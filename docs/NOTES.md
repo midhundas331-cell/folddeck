@@ -7,11 +7,8 @@ early sections still speak in spike terms. The original, larger architecture is
 in [`../PLAN.md`](../PLAN.md); most of it was never needed.
 
 ```
-host/stream.py                     x11grab -> H.264 -> TCP; reads key events back
+host/stream.py                     KMS / wf-recorder / x11grab -> H.264 -> TLS; reads input back
 host/uinput.py                     virtual keyboard via /dev/uinput, no dependencies
-host/clock.py                      GTK ms clock to film for the latency measurement
-host/test_input.py                 end-to-end test of the input channel
-host/test_parser.py                access-unit splitter test
 host/test_theme.py                 theme SEI splice + extract round trip
 android/src/.../H264Stream.java    TCP -> Annex-B parser -> MediaCodec -> Surface
 android/src/.../KeyboardView.java  the keyboard: multitouch, latching, repeat
@@ -480,6 +477,160 @@ per event); the old per-event `Math.round` turned every one into 0. The
 remainder is now carried between events and whole notches sent. Smooth scroll
 would need `REL_WHEEL_HI_RES` units on the wire (a host change). Both verified.
 
+## Latency pass (0.7, 2026-10-26)
+
+Measured on the live desktop before changing anything: wf-recorder with `-r 60`
+delivered frames in **bursts of 5-7 every 60-120 ms** (arrival lagged capture by
+20-160 ms). Hyprland only renders ~10 fps on a still screen, and `-r` padded the
+gaps with copies of the last frame, encoded 3 ms apiece *before* the new one.
+Without `-r`, each real frame is encoded the moment the compositor produces it.
+
+Two more frames were lost on the phone: an Annex-B NAL only ends at the next
+start code, so each frame waited for the next frame's first NAL, and the access
+unit was only flushed when that NAL completed -- two frame intervals. And the
+decoder's output was drained only when the next frame was queued, so every
+decoded frame sat a further frame before reaching the screen.
+
+What changed:
+- **Host captures FLV** (`-m flv`), purely for its framing: each tag states its
+  length, so `flv_frames()` knows a frame is complete when its last byte lands,
+  converts it to Annex-B (SPS/PPS re-inserted before keyframes) and sends it with
+  an **AUD** (`00 00 00 01 09 F0`) after it. Every unit ends with an AUD: frames,
+  the palette, audio.
+- **Phone**: `AnnexB` (new, JVM-checked by `AnnexBCheck`) treats an AUD as "all
+  before me is complete" and flushes the access unit at once. A `folddeck-render`
+  thread releases decoded frames the moment they exist; input buffers wait up to
+  20 ms rather than drop (a drop smears until the next keyframe).
+- **Audio** has its own send thread (~10 ms slices from `parec --latency-msec=10`)
+  instead of riding video frames, which on a still screen now come ~10/s. Host
+  drops audio older than 100 ms. `AudioOut.steer()` keeps the track queue at a
+  40 ms target: a drained queue is padded back to 40 ms with silence, a queue past
+  100 ms drops the slice. Before, it only dropped once the 180 ms buffer was full.
+- **Input**: the writer sends everything queued as one write (one TLS record),
+  runs at URGENT_DISPLAY priority; touch views call `requestUnbufferedDispatch`
+  so events arrive as the panel reports them, not once per frame.
+- **DSCP**: host marks the socket CS4 (Wi-Fi video category), phone CS6 (voice
+  category; upstream is only input).
+- No wire-format change: an AUD is standard H.264, so a 0.6 APK still works
+  against this host (it hands the AUD to its decoder), and 0.7 works against an
+  old host (it falls back to the next-picture flush).
+
+**0.7.1 — the phone end (2026-10-26).** Samsung's adaptive refresh dropped
+the panel to **20-24 Hz** while FoldDeck showed a ~19 fps desktop, so new frames
+waited up to ~42 ms for a refresh. `pinRefreshRate()` sets the window's
+`preferredDisplayModeId` to the fastest mode at the current resolution (re-run on
+fold/unfold): measured 120 Hz steady afterwards. A `WIFI_MODE_FULL_LOW_LATENCY`
+lock while in the foreground took LAN ping to the phone from p50 7.4 / max 53 ms
+to p50 4.8 / max 17 ms. The host status line now prints delivered fps. The laptop
+panel is 60 Hz (only mode); Hyprland renders only on change, and every frame it
+renders is sent, so the stream runs at the laptop's real frame rate, up to 60.
+
+**KMS capture — host only (2026-10-26).** A 60 fps YouTube video still looked
+choppy: the status line showed 9-17 fps. Hyprland's main thread was the limit
+(~33% CPU idle, ~80% playing video, 94-98% once screencopy was added on top),
+so wf-recorder got whatever frames were left. The host now reads the scanout
+framebuffer directly with ffmpeg `kmsgrab` → `hwmap` to VA-API → `h264_vaapi`,
+no compositor involvement: **59 fps steady, capture 16.8 ms/f, Hyprland down
+from ~95% to ~52%**, ~11 Mbps with video playing. It sends every vblank, so a
+still screen now costs a constant stream of tiny P-frames.
+- Needs CAP_SYS_ADMIN. `host/install-kms.sh` copies ffmpeg to
+  `~/.local/lib/folddeck/ffmpeg-kms` (mode 0700) and `setcap`s it (sudo in a
+  terminal, pkexec dialog otherwise). Re-run after an ffmpeg upgrade.
+- `kms_works()` grabs 2 frames at startup and falls back to wf-recorder with the
+  reason in the journal, so a missing capability never breaks streaming.
+- The unit had to lose `NoNewPrivileges`, `PrivateTmp`, `ProtectKernelTunables`,
+  `ProtectControlGroups` and `RestrictRealtime`: in a *user* unit the middle
+  three force a user namespace (a file capability then only counts inside it)
+  and `RestrictRealtime` installs a seccomp filter, which forces no_new_privs.
+  Check with `grep -E 'NoNewPrivs|Seccomp' /proc/<host pid>/status` (both 0).
+- kmsgrab sees only the primary plane, so `~/.config/hypr/looknfeel.lua` sets
+  `cursor.no_hardware_cursors = 1` (software cursor) or the pointer vanishes.
+- Undo: `rm ~/.local/lib/folddeck/ffmpeg-kms` and restart; restore the unit lines.
+- **Broke the picture, disabled same day.** Hyprland scans out with modifier
+  `0x100000000000004` (I915 Y_TILED_CCS, render-compressed). kmsgrab exports
+  only the main plane, so VA-API read compressed tiles as plain ones: blocky
+  noise on the phone. The fps number was real, the frames were garbage; check a
+  frame (`hwdownload` to PNG) before trusting a capture path. Disabled by
+  renaming the binary to `ffmpeg-kms.off` (capability kept). Candidate fix:
+  start Hyprland with `INTEL_DEBUG=norbc` so scanout is plain Y-tiled. Needs a
+  Hyprland restart. Set in `~/.config/uwsm/env` (`export INTEL_DEBUG=norbc`,
+  sourced by uwsm before Hyprland starts).
+- **Fixed 2026-10-26 after re-login.** Hyprland's environ has `INTEL_DEBUG=norbc`,
+  kmsgrab reports modifier `0x100000000000002` (plain Y_TILED), and a grabbed
+  frame converted to PNG is a clean desktop. Binary renamed back to `ffmpeg-kms`.
+  If the picture turns to noise again, check that env var survived first.
+
+Expected saving is ~3 frame intervals plus the duplicate-frame queue. Not
+measured glass-to-glass; the method below still applies.
+`host/test_parser.py` (a port of the old splitter) and `DecoderSchedulingCheck`
+(the drain-before-dequeue order) were deleted with the code they tested.
+
+## Stream quality: QP 26 -> 20 (2026-10-26, host only)
+
+QP 26 kept text sharp but made video (a 1440p YouTube clip, already downscaled
+to the 1080p panel) soft and blocky. Now one constant, `QP` in `host/stream.py`,
+covers the KMS, ffmpeg and wf-recorder VA-API paths, set to 20. Measured
+with video playing: ~25-32 Mbps at 59.7 fps, send 0.2 ms/frame on home Wi-Fi,
+against ~1-3 Mbps before on a mostly still desktop. On mobile data that is
+roughly 11-14 GB an hour of video; raise `QP` if that matters.
+
+**Per network (0.8.1):** the phone sends `MSG_NETWORK` (type 7, u8 1 = mobile
+data) and the host streams QP 20 (`QP_WIFI`) on Wi-Fi or Ethernet, 26
+(`QP_MOBILE`) on mobile data. It decides by the network, not the route,
+because the tailnet is also used from other Wi-Fi. Detection
+(`MainActivity.onMobileData`) reads the active network's transports (a VPN
+carries its underlying one's) and falls back to "is any Wi-Fi/Ethernet up". A
+default-network callback re-sends on change, because a tailnet stream survives
+a move from someone's Wi-Fi to mobile data without reconnecting. The host
+restarts its encoder on a change (logs "quality: QP n for ..."), and the next
+keyframe carries the new SPS/PPS in-band. **Host first:** an older host drops
+the connection on type 7. Connect sends it only when on mobile data, so Wi-Fi
+use against an old host still works. Needs `ACCESS_NETWORK_STATE`. Checks:
+`host/test_encoder_config.py`.
+
+## Theatre mode and cover wheel (0.8)
+
+- **Theatre** (unfolded only): the floating ▣ button (draggable, position
+  remembered like the cover ⌨) hides keyboard, trackpad, shortcut deck, chassis,
+  hinge, HUD and the accent app frame, and centres the desktop on black. The
+  button stays at 25% opacity; it or Back leaves. Folding turns it off. Touches
+  on the image still drive the pointer, so play/pause works.
+- **Cover wheel**: in cover screen-only mode a 40dp wheel (26dp until 0.8.2, too
+  slim) sits in the band beside the desktop (opposite its alignment), full height. It is `TrackpadDeck`
+  in wheel-only mode, so it has the same detents, haptics, coasting and natural
+  scroll setting as the trackpad wheel. Its listener ignores move/click, so a
+  second finger does nothing.
+- Not verified on the phone by eye (FLAG_SECURE blocks screencaps).
+
+## Split layout and one keycap style (0.7)
+
+- **Layout preset "Split"** (Settings → Layout, per posture): the keyboard breaks
+  where touch typists' hands do (F6|F7, 6|7, T|Y, G|H, B|N, space bar cut in two)
+  and the trackpad fills a centred channel (`InputDeckLayout.splitChannel`, 19%
+  of the width scaled by the trackpad-size slider, 120dp minimum). Each half has
+  its own key unit; a short row gives the slack to its widest key. The TrackPoint
+  is hidden in Split. The keyboard must have **no elevation**: a raised keyboard
+  draws over the channel and takes its touches (it did, first try).
+- **`Ui.drawCap`** is the single raised-control look: lip below, 1px top
+  highlight, hairline rim, sinks when pressed. Keys, the trackpad buttons/pad/wheel
+  well and the shortcut chips (`Ui.cap` Drawable) all use it.
+- **`Bounce`**: press eases to 0.93, release springs back past 1 (back-out). Keys
+  and trackpad buttons use it on the canvas; `Motion.press` uses the same curve.
+- **Scroll wheel**: a drum drawn edge-on (ridges at sin(angle), thinning with
+  cos), rolls with the finger, ticks with `SEGMENT_FREQUENT_TICK` at every 32dp
+  detent (was 42dp), coasts after a flick (tau 0.22s) and clicks into the nearest
+  detent on release (`TrackpadState.settle`, past half a notch scrolls one more).
+
+**Screenshots:** FLAG_SECURE blackens `screencap`. For a visual check, build once
+with the flag commented out, capture with `screencap -d <inner display id>` (the
+Fold has two displays; without `-d` the output is a warning, not a PNG), then
+reinstall the normal build. After an incremental install `am force-stop` the app,
+or the old process keeps running. Rendering views off-screen via `app_process`
+does not work: system fonts never load there. A temporary intent-extra hook that
+opens a screen in `onResume` must check the views exist and remove the extra after
+use: unguarded, it crash-looped the app when Android relaunched it from recents
+(2026-10-26).
+
 ## Measured on this laptop (2026-07-28)
 
 | | |
@@ -511,6 +662,19 @@ is actually installed.
 | 0.4 | 4 | Explicit pairing window, per-host phone credentials, TLS 1.3 only, DoS/input/parser hardening, bounded decoder scheduling, premium motion/type hierarchy and TrackPoint polish |
 | 0.5 | 5 | Video-first Fold geometry, open-portrait control shelf, cover monitor/input transition, floating depth hierarchy, personalization, dedicated trackpad, held source-safe buttons and themed scroll rail |
 | 0.6 | 6 | Laptop audio on the phone, trackpad tap-to-click, layout presets per posture, keyboard/trackpad size, keyboard look, shortcut bar placement, landscape-only cover, movable cover button |
+| 0.8.4 | 14 | Switches a tailnet stream back to home Wi-Fi when it returns (certificate-checked) |
+| 0.8.5 | 15 | Split keyboard halves share one key size (pad takes the slack); floating buttons follow the theme; Settings split into Omarchy-style category pages |
+| 0.8.6 | 16 | Settings labels rewritten in plain words (e.g. TrackPoint → Red pointer dot, Forget certificate → Reset laptop trust) |
+| 0.9 | 17 | Settings redesigned iOS-style: laptop card, grouped rounded lists, colour icon tiles, pill switches, round-knob sliders, segmented controls; Apple-style wording (short Title Case names, explanations in group footers) |
+| 0.9.1 | 18 | Settings back to Omarchy style, modelled on the Omarchy menu: 2px-bordered square card, "Settings…" heading, Nerd Font icon rows, cursor fill + accent label on press, 20% dividers, ToggleSwitch/PanelSlider/ButtonGroup controls; bigger (60dp rows, 17sp mono). Keeps 0.9's wording |
+| 0.9.2 | 19 | Home and How to Use moved onto the Omarchy menu card (connection state + both routes in one section, actions as icon rows); guide rewritten in Apple-style wording; no more desktop flash between sheets |
+| 0.8.3 | 13 | Audio errors cost the sound, not the stream. Ponytail pass: dead helpers removed |
+| 0.8.2 | 12 | Cover wheel full height, 40dp wide |
+| 0.8.1 | 11 | Tells the laptop when it is on mobile data; stream quality QP 20 on Wi-Fi, 26 on mobile (host first) |
+| 0.8 | 10 | Theatre mode (unfolded: floating ▣ shows the desktop alone, centred on black, no frame or borders; Back or ▣ leaves), slim scroll wheel beside the cover desktop in screen-only mode |
+| 0.7.2 | 9 | A dropped stream re-measures both routes, so leaving Wi-Fi fails over to the tailnet |
+| 0.7.1 | 8 | Panel pinned to max refresh, low-latency Wi-Fi lock |
+| 0.7 | 7 | Latency pass (frame-exact video, render thread, steered audio, batched input), Split layout, one keycap style for keys/trackpad/shortcuts, scroll wheel with detents |
 
 **0.2 needs a host from 2026-09-20 or later** — see the wire-format table under
 Input. Bump `versionCode` before building anything you plan to sideload.
@@ -528,7 +692,7 @@ Built APK: `android/build/folddeck.apk` (239,136 bytes, v3-signed, min API 31).
 ```bash
 adb install -r android/build/folddeck.apk
 adb reverse tcp:5000 tcp:5000
-./host/stream.py --bind 127.0.0.1 --clock
+./host/stream.py --bind 127.0.0.1
 adb shell am start -n io.folddeck.spike/.MainActivity
 ```
 
@@ -548,7 +712,7 @@ Then tap it in Files to install, launch, and enter one of:
 | LAN (5 GHz) | `<laptop-lan-ip>:5000` | best untethered number |
 | Tailscale | `<laptop-tailnet-ip>:5000` | ~8 ms RTT of overhead before anything else |
 
-Host side: `./host/stream.py --bind 0.0.0.0 --clock`
+Host side: `./host/stream.py --bind 0.0.0.0`
 
 The optional HUD shows Mbps, frames decoded/dropped, and decoder p50/p99. Its
 visibility is controlled in Settings; address editing lives on Home/Settings.
@@ -557,8 +721,9 @@ or network.
 
 ## Measuring glass-to-glass
 
-`--clock` opens a large millisecond clock on the laptop. Point a phone camera in
-240 fps slow-motion at both screens at once, record a few seconds, then step
+Put any large millisecond stopwatch on the laptop (a browser page will do; the
+old `--clock` window was removed 2026-10-26, unused and X11-only). Point a phone
+camera in 240 fps slow-motion at both screens at once, record a few seconds, then step
 through frames and read both clocks in a single video frame. **The difference is
 the latency.** No instrumentation, no trusting either end's timers, no clock sync.
 
@@ -576,8 +741,7 @@ the problem is the network, not the code, and `WIFI_MODE_FULL_LOW_LATENCY` plus
 
 ## Requirements
 
-Host: `ffmpeg`, an X11 session, `xterm` for `--clock` (optional,
-`sudo apt install xterm`). All present.
+Host: `ffmpeg`, and `wf-recorder` on Wayland (or an X11 session). All present.
 
 Client: JDK 21 (installed) + `~/Android/Sdk` build-tools 36.0.0 and platform
 android-36 (present). `aapt2`/`zipalign` are native; `javac`, `d8`, `apksigner`
@@ -602,7 +766,8 @@ Verified by running it:
   produced 6 press / 6 release in X11, right keycodes, right order — including a
   message deliberately split across two TCP writes. Absolute pointer positions
   land within 3px of where asked across all four corners, read back from
-  `xdotool getmouselocation`. (`host/test_input.py`)
+  `xdotool getmouselocation`. (`host/test_input.py`, removed 2026-10-26: it
+  needed X11 and the retired permille message; `test_pointer.py` covers parsing.)
 - **every key on the ThinkPad layout**: all 65 distinct scancodes the layout can
   emit were driven through `input_reader()` into X and all 65 arrived. This is
   what caught the `KEY_MICMUTE` ceiling above.
@@ -649,6 +814,84 @@ Not verified (2026-09-13 theme update):
   Waydroid was left installed with `waydroid-container.service` enabled but idle.
 
 ## Gotchas already hit here
+
+- **Ponytail pass + bug hunt (2026-10-26).** Removed: `--probe` (encoder
+  headroom/cadence, numbers already recorded above), `--clock` + `clock.py`,
+  the retired permille pointer message (type 2, pre-0.2 APKs) with
+  `VirtualPointer.move` and the X11-only `test_input.py`, plus helpers that had no
+  callers (`Ui.gap/title`, `Endpoints.summary`, `PointerPad.releaseButtonSource`,
+  `Prefs.LAST`, `security.new_token`). Bugs fixed: (1) a desynced or closed
+  input reader printed "closing" but left the stream running, with video on and
+  input dead; it now shuts the socket down (`test_pointer.py`). (2) An AudioTrack
+  the system refused threw out of the receive thread and dropped the whole
+  stream into a reconnect loop; now it only drops that audio slice.
+- **Settings as pages (0.8.5).** Settings was one ~40-row scroll. It is now an
+  Omarchy-style menu (hero with version + laptop address, then Connection,
+  Display, Keyboard, Trackpad & touch, Shortcuts, Mouse, Security), each opening
+  its own page; Back steps up to the menu first (`Panel.up()`). Rows are square
+  with a 1px border at 40% (Omarchy's panel item), a whole toggle row is the
+  touch target, sliders and segment pickers sit full-width under their label.
+  Split keyboard: both halves now use the step of the wider half (9.5 units),
+  so keys match and the trackpad between them grows ~50% (`KeyboardView.splitEdges`).
+  The theatre and cover floating buttons are repainted in `applyTheme`.
+- **Settings, iOS style (0.9).** The user rejected the Omarchy-square pages and
+  the long descriptive labels ("make it like Apple"). Now: a laptop card, then
+  grouped rounded lists (12dp, `Ui.GROUP` fill, inset `Ui.SEPARATOR` hairlines),
+  white-glyph icon tiles in the theme's named colours (`Ui.BLUE/CYAN/MAGENTA/ORANGE`,
+  falling back to color1-6), animated pill switches, round-knob sliders and a
+  segmented control in `Ui`. Row names are short Title Case; what a setting does
+  lives once in the grey footer under its group. Verified on the phone with a
+  temporary build (FLAG_SECURE off + an intent extra opening each page), then
+  restored.
+- **Settings, Omarchy menu style (0.9.1).** The user liked 0.9's wording but
+  not the iOS look, and pointed at the Omarchy menu (`omarchy menu`, source
+  `/usr/share/omarchy/shell/plugins/menu/Menu.qml`). Settings now copies it:
+  a square card with a 2px foreground border, a dim "Settings…" heading, rows
+  of Nerd Font icon + mono label + chevron, the pressed row filled with the
+  selected colour and its label in the accent, 20% hairline dividers between
+  sections. The icons are a 7 KB subset of JetBrainsMono Nerd Font Mono
+  (`assets/fonts/Icons.ttf`, `pyftsubset --unicodes=...`; the codepoints are the
+  ones `omarchy-menu.jsonc` uses). Controls follow Omarchy's own: square
+  ToggleSwitch, PanelSlider (round foreground knob ringed in the background),
+  ButtonGroup cells.
+- **Desktop flash between sheets (fixed 0.9.2).** `showScreen` hid the old
+  sheet at once and faded the new one in from alpha 0 (`Motion.enter`), so the
+  live deck underneath showed through for the length of the fade. Sheets now
+  only fade in when they rise over the deck; sheet-to-sheet is an instant swap.
+- **One menu style everywhere (0.9.2).** `Ui.menuCard/menuHeading/menuSection/
+  menuNote/divider/menuItem` are the Omarchy menu pieces; Home, Settings and
+  How to Use are all built from them.
+- **Never adb-tap while the user may be on the deck.** A test tap meant for
+  Home's Settings button landed on the keyboard's "8" because the user had
+  returned to the desktop between screenshot and tap. Screenshot, then tap in
+  the same command, and only on screens without the keyboard.
+- **Back to home Wi-Fi (0.8.4).** A tailnet stream never drops when home Wi-Fi
+  returns, so it used to stay on the slower route. Now, every 15 s while on the
+  tailnet and not on mobile data, `MainActivity.homeCheck` runs
+  `Secure.presents()`, a TLS handshake to the home address that pins nothing and
+  sends no hello (the host logs "closed during hello" and keeps the stream). It
+  switches only if the home address presents the same certificate as the
+  laptop already streaming, so a stranger's device at the same 192.168.x address
+  on someone else's Wi-Fi is never picked. Tested against the live host: right
+  certificate true, wrong one false, closed port false.
+- **LAN path can break on its own.** 2026-10-26 ~06:00: phone on home Wi-Fi, ARP
+  resolved, but ping, adb and Tailscale direct all failed (Tailscale went via
+  the DERP relay), so the app correctly chose the tailnet. It came back by
+  itself (or after a Wi-Fi toggle). Not an app bug; check `ping` and
+  `tailscale status` (direct or relay) before debugging route choice.
+
+- **Wi-Fi → mobile data locked the phone out (fixed 2026-10-26).** Leaving Wi-Fi
+  never closes the old socket, so the host held the dead stream for TCP's
+  ~15 min retry window and refused every tailnet reconnect with "another stream
+  is active". The phone itself was fine; `tailscale ping` worked. Now an
+  authenticated newcomer shuts the stale socket down and takes over (logged
+  "takes over the stream"), and `TCP_USER_TIMEOUT` 10 s drops an orphaned stream
+  on its own, so the laptop gets its audio back. Check: `host/test_accept.py`.
+  Second half, on the phone (0.7.2): the route was chosen once per connect,
+  so after the drop the retry loop redialled the dead LAN address until it gave
+  up. Now each failed redial of a stream that had been open re-probes both
+  addresses (`MainActivity.reroute`) and switches only if the other one answers,
+  so a host restart still just retries.
 
 - **Fingerprint unlock never worked until 2026-09-13.** The manifest lacked
   `android.permission.USE_BIOMETRIC`, so `BiometricManager.canAuthenticate()`

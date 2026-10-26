@@ -49,6 +49,30 @@ def main() -> None:
     t1.join(1)
     print("concurrent accept ok")
 
+    # A phone that switched networks: its old stream sits blocked on a dead
+    # socket. The reconnect must kick it, not be refused.
+    import socket
+    old, _peer = socket.socketpair()
+    takeover: list[str] = []
+
+    def stuck_or_quick(conn, args, encoder, kbd, ptr):
+        if args.name == "old":
+            conn.recv(1)   # blocks until shut down
+        takeover.append(args.name)
+
+    def accept_all(raw, addr, tls, allow_new):
+        return raw
+
+    common.update(handshake_fn=accept_all, pump_fn=stuck_or_quick)
+    t_old = stream.dispatch_client(old, ("wifi", 1), args=SimpleNamespace(name="old"), **common)
+    time.sleep(0.2)
+    t_new = stream.dispatch_client(FakeSocket(), ("tailnet", 2),
+                                   args=SimpleNamespace(name="new"), **common)
+    t_new.join(2)
+    t_old.join(1)
+    assert takeover == ["old", "new"], takeover
+    print("reconnect takeover ok")
+
 
 if __name__ == "__main__":
     main()

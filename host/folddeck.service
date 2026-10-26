@@ -25,11 +25,11 @@ RestartSec=3
 
 # The service needs /dev/uinput and the X socket, so it cannot be sandboxed hard.
 # These are the restrictions that still hold.
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectKernelTunables=true
-ProtectControlGroups=true
-RestrictRealtime=true
+# NoNewPrivileges off: KMS capture needs ffmpeg-kms to keep CAP_SYS_ADMIN
+# PrivateTmp off: in a user unit it forces a user namespace, which voids KMS capture
+# ProtectKernelTunables off: in a user unit it forces a user namespace, which voids KMS capture
+# ProtectControlGroups off: in a user unit it forces a user namespace, which voids KMS capture
+# RestrictRealtime off: its seccomp filter forces no_new_privs, which voids KMS capture
 
 [Install]
 # Intentionally NOT WantedBy=default.target. That would start it at user-session

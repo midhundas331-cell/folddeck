@@ -16,9 +16,9 @@ import java.util.WeakHashMap;
 
 /** Small motion grammar shared by every screen and control. */
 final class Motion {
-    static final float PRESS_SCALE = 0.972f;
+    static final float PRESS_SCALE = 0.96f;
     static final long PRESS_MS = 75;
-    static final long RELEASE_MS = 170;
+    static final long RELEASE_MS = 300;
     static final long ENTER_MS = 220;
     static final long COVER_SWITCH_MS = 260;
     static final float COVER_OVERSHOOT = 1.18f;
@@ -43,7 +43,7 @@ final class Motion {
                     break;
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
-                    animatePressScale(v, 1f, RELEASE_MS, spring());
+                    animatePressScale(v, 1f, RELEASE_MS, Bounce::backOut);
                     break;
                 default:
                     break;
@@ -95,7 +95,7 @@ final class Motion {
                 }
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
-                    animatePressScale(v, 1f, RELEASE_MS, spring());
+                    animatePressScale(v, 1f, RELEASE_MS, Bounce::backOut);
                     if (!dragging[0]) return false;
                     dragging[0] = false;
                     onDrop.at(v.getTranslationX(), v.getTranslationY());

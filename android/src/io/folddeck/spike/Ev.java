@@ -156,4 +156,28 @@ final class Ev {
 
     /** Every row sums to this. */
     static final float ROW_UNITS = 16f;
+
+    /** Width each half of a split space bar starts from, before it takes up slack. */
+    static final float SPACE_HALF = 1.5f;
+
+    /** First key of the right hand, row by row, where a split board breaks. */
+    private static final java.util.Set<Integer> RIGHT_HAND_STARTS =
+            java.util.Set.of(F7, K7, Y, H, N);
+
+    /** A row as [left half, right half]; the space bar appears in both. */
+    static java.util.List<java.util.List<Key>> splitRow(Key[] row) {
+        java.util.List<Key> left = new java.util.ArrayList<>(), right = new java.util.ArrayList<>();
+        boolean rightHand = false;
+        for (Key k : row) {
+            if (k.code == SPACE) {
+                left.add(k);
+                right.add(k);
+                rightHand = true;
+                continue;
+            }
+            rightHand |= RIGHT_HAND_STARTS.contains(k.code);
+            (rightHand ? right : left).add(k);
+        }
+        return java.util.List.of(left, right);
+    }
 }

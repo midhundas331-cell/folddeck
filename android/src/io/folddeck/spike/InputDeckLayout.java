@@ -33,6 +33,7 @@ final class InputDeckLayout extends ViewGroup {
     private boolean sideBySide;
     private boolean portraitConsole;
     private boolean padLeft;
+    private boolean split;
     private float padScale = 1f;
     private boolean inputEnabled = true;
     private final int gap;
@@ -72,7 +73,9 @@ final class InputDeckLayout extends ViewGroup {
     }
 
     void configure(boolean showKeyboard, boolean showTrackpad, boolean horizontalSplit,
-                   boolean portraitShelf, boolean trackpadLeft, float trackpadSize) {
+                   boolean portraitShelf, boolean trackpadLeft, float trackpadSize,
+                   boolean splitKeyboard) {
+        split = splitKeyboard;
         padLeft = trackpadLeft;
         padScale = trackpadSize;
         keyboardVisible = showKeyboard;
@@ -108,10 +111,37 @@ final class InputDeckLayout extends ViewGroup {
         return blocksInput(inputEnabled) || super.onTouchEvent(event);
     }
 
+    /** Width of the trackpad channel in a split board. */
+    static int splitChannel(int keyboardWidth, float padScale, float density) {
+        int want = Math.round(keyboardWidth * 0.19f * padScale);
+        return clamp(want, Math.round(120f * density), Math.round(keyboardWidth * 0.34f));
+    }
+
     static Boxes computeBoxes(int width, int height, int gap,
                               boolean keyboard, boolean trackpad,
                               boolean sideBySide, boolean portraitConsole, boolean padLeft,
                               float padScale, float density) {
+        return computeBoxes(width, height, gap, keyboard, trackpad, sideBySide,
+                portraitConsole, padLeft, padScale, density, false);
+    }
+
+    /**
+     * With {@code split}, the keyboard keeps the box it would have alone and the
+     * trackpad takes a channel down its middle; the keyboard is told the
+     * channel's width and lays its halves either side of it.
+     */
+    static Boxes computeBoxes(int width, int height, int gap,
+                              boolean keyboard, boolean trackpad,
+                              boolean sideBySide, boolean portraitConsole, boolean padLeft,
+                              float padScale, float density, boolean split) {
+        if (split && keyboard && trackpad) {
+            Boxes alone = computeBoxes(width, height, gap, true, false, false,
+                    portraitConsole, padLeft, padScale, density, false);
+            Box kb = alone.keyboard;
+            int channel = splitChannel(kb.w, padScale, density);
+            return new Boxes(kb, new Box(kb.x + (kb.w - channel) / 2, kb.y, channel, kb.h),
+                    alone.shortcut);
+        }
         Box none = new Box(0, 0, 0, 0);
         if (!keyboard && !trackpad) return new Boxes(none, none, none);
 
@@ -163,12 +193,24 @@ final class InputDeckLayout extends ViewGroup {
     protected void onMeasure(int widthSpec, int heightSpec) {
         int width = MeasureSpec.getSize(widthSpec), height = MeasureSpec.getSize(heightSpec);
         Boxes boxes = computeBoxes(width, height, gap, keyboardVisible,
-                trackpadVisible, sideBySide, portraitConsole, padLeft, padScale, density);
+                trackpadVisible, sideBySide, portraitConsole, padLeft, padScale, density, split);
+        boolean splitShown = split && keyboardVisible && trackpadVisible;
+        if (keyboard instanceof KeyboardView) {
+            KeyboardView kb = (KeyboardView) keyboard;
+            kb.setSplitGap(splitShown ? boxes.trackpad.w : 0);
+            if (trackpad instanceof TrackpadDeck) {
+                // In the channel, the pad's zones sit exactly one key gap in, so
+                // it reads as part of the board rather than a panel laid on it.
+                ((TrackpadDeck) trackpad).setInset(splitShown
+                        ? kb.keyGap(boxes.keyboard.w) : Ui.dp(getContext(), 6));
+            }
+        }
         if (keyboard != null && keyboardVisible) {
             keyboard.measure(exact(boxes.keyboard.w), exact(boxes.keyboard.h));
         }
         if (trackpad != null && trackpadVisible) {
-            trackpad.measure(exact(boxes.trackpad.w), exact(boxes.trackpad.h));
+            Box pad = padBox(boxes);
+            trackpad.measure(exact(pad.w), exact(pad.h));
         }
         if (shortcut != null && portraitConsole) {
             shortcut.measure(exact(boxes.shortcut.w), exact(boxes.shortcut.h));
@@ -179,19 +221,30 @@ final class InputDeckLayout extends ViewGroup {
     @Override
     protected void onLayout(boolean changed, int l, int t, int r, int b) {
         Boxes boxes = computeBoxes(r - l, b - t, gap, keyboardVisible,
-                trackpadVisible, sideBySide, portraitConsole, padLeft, padScale, density);
+                trackpadVisible, sideBySide, portraitConsole, padLeft, padScale, density, split);
         if (keyboard != null && keyboardVisible) {
             Box box = boxes.keyboard;
             keyboard.layout(box.x, box.y, box.right(), box.bottom());
         }
         if (trackpad != null && trackpadVisible) {
-            Box box = boxes.trackpad;
+            Box box = padBox(boxes);
             trackpad.layout(box.x, box.y, box.right(), box.bottom());
         }
         if (shortcut != null && portraitConsole) {
             Box box = boxes.shortcut;
             shortcut.layout(box.x, box.y, box.right(), box.bottom());
         }
+    }
+
+    /** Split: the pad fills exactly between the halves the keyboard laid out. */
+    private Box padBox(Boxes boxes) {
+        if (!(split && keyboardVisible && trackpadVisible && keyboard instanceof KeyboardView)) {
+            return boxes.trackpad;
+        }
+        float[] e = ((KeyboardView) keyboard).splitEdges(boxes.keyboard.w);
+        int left = Math.round(e[0]), right = Math.round(e[1]);
+        return new Box(boxes.keyboard.x + left, boxes.trackpad.y, Math.max(0, right - left),
+                boxes.trackpad.h);
     }
 
     private static int exact(int size) {

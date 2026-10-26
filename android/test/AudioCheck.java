@@ -18,6 +18,11 @@ public class AudioCheck {
                 45, 49, 97, 61, 98, 10, -128};
         check(AudioOut.pcmFrom(theme) == null, "theme SEI is not audio");
         check(AudioOut.pcmFrom(new byte[]{5, 1, 2}) == null, "slices are not audio");
+        int ms = 48;   // frames per millisecond
+        check(AudioOut.steer(0, 10 * ms) == 30 * ms, "a drained queue is cushioned to 40 ms");
+        check(AudioOut.steer(30 * ms, 10 * ms) == 0, "a healthy queue plays as-is");
+        check(AudioOut.steer(95 * ms, 10 * ms) == -1, "a queue past 100 ms drops the slice");
+        check(AudioOut.steer(-50, 10 * ms) == 30 * ms, "an underrun head past written counts as empty");
         System.out.println("AudioCheck ok");
     }
 }

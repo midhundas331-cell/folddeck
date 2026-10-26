@@ -41,6 +41,23 @@ final class InputOutbox {
         return next;
     }
 
+    /** Every queued message, in order, as one buffer; null on timeout. */
+    synchronized byte[] takeAll(long timeoutMs) throws InterruptedException {
+        if (queue.isEmpty() && timeoutMs > 0) wait(timeoutMs);
+        if (queue.isEmpty()) return null;
+        int size = 0;
+        for (byte[] m : queue) size += m.length;
+        byte[] out = new byte[size];
+        int o = 0;
+        for (byte[] m : queue) {
+            System.arraycopy(m, 0, out, o, m.length);
+            o += m.length;
+        }
+        queue.clear();
+        reliableCount = 0;
+        return out;
+    }
+
     synchronized void clear() {
         queue.clear();
         reliableCount = 0;

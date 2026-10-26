@@ -62,6 +62,22 @@ final class H264Stream implements Runnable {
         this.themeListener = l;
     }
 
+    /** Asked at each connect: is the phone on mobile data right now? */
+    private volatile java.util.function.BooleanSupplier onMobileData;
+
+    void setMobileDataCheck(java.util.function.BooleanSupplier check) {
+        onMobileData = check;
+    }
+
+    /**
+     * MSG_NETWORK: the laptop streams at lower quality on mobile data. Needs a
+     * host from 2026-10-26 or later; an older one drops the connection on it,
+     * so connect only sends it when the answer is "mobile".
+     */
+    void sendNetwork(boolean mobile) {
+        offer(new byte[]{7, (byte) (mobile ? 1 : 0)});
+    }
+
     private static final byte[] THEME_UUID =
             "FOLDDECK-THEME-1".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
 
@@ -127,8 +143,10 @@ final class H264Stream implements Runnable {
     private final android.content.SharedPreferences prefs;
 
     private volatile boolean running = true;
-    private MediaCodec codec;
-    private final MediaCodec.BufferInfo outputInfo = new MediaCodec.BufferInfo();
+    /** A connection opened at least once: a later failure means the route died. */
+    volatile boolean everOpened;
+    private volatile MediaCodec codec;
+    private Thread outputThread;
 
     /** Reliable key/button transitions plus a coalesced latest pointer sample. */
     private final InputOutbox outbox = new InputOutbox();
@@ -136,13 +154,12 @@ final class H264Stream implements Runnable {
     private volatile Socket activeSocket;
     private volatile Thread writerThread;
 
-    // Stream accumulator. 1 MiB is comfortably more than one 1080p IDR; 8 MiB
-    // is a hard protocol limit so a peer cannot grow the process without bound.
-    static final int MAX_STREAM_BUFFER = 8 << 20;
     static final int MAX_ACCESS_UNIT = 8 << 20;
     static final int MAX_ACCESS_UNIT_NALS = 4096;
-    private byte[] buf = new byte[1 << 20];
-    private int len = 0;
+    private final AnnexB splitter = new AnnexB(new AnnexB.Sink() {
+        @Override public void nal(byte[] nal) { onNal(nal); }
+        @Override public void unitEnd() { flushAccessUnit(); }
+    });
 
     // Current access unit under construction, as a list of complete NAL units
     // (each already prefixed with a 4-byte start code).
@@ -154,7 +171,8 @@ final class H264Stream implements Runnable {
     private final AudioOut audio = new AudioOut();
 
     private long totalBytes = 0;
-    private int decoded = 0, dropped = 0;
+    private volatile int decoded = 0;
+    private int dropped = 0;
     private final long[] decodeSamples = new long[256];
     private int decodeCount = 0;
 
@@ -195,8 +213,7 @@ final class H264Stream implements Runnable {
      * Not the older permille MSG_PTR_ABS (type 2). A thousand steps is 1.9px per
      * step across a 1920px desktop -- invisible under a finger, visibly steppy
      * under a mouse, and at a low pointer speed a small movement rounds to no
-     * movement at all. The host still parses type 2, so an older APK keeps
-     * working; this one needs a host new enough to know type 5.
+     * movement at all. Type 2 is retired on the host (2026-10-26).
      */
     void sendPointer(int x, int y) {
         offer(new byte[]{5,
@@ -237,15 +254,19 @@ final class H264Stream implements Runnable {
     }
 
     private void writerLoop() {
+        // Input is the one thing the user waits on; keep it off the slow queue.
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY);
         while (running) {
             OutputTarget target = null;
             try {
-                byte[] msg = outbox.take(200);
+                // Everything queued goes out as one write: one TLS record and one
+                // packet instead of one per event. Nothing waits to be batched --
+                // whatever is pending when the thread wakes is the batch -- so the
+                // faster the input, the fewer bytes per event.
+                byte[] msg = outbox.takeAll(200);
                 target = outputTarget;
                 if (msg == null || target == null) continue;
                 target.output.write(msg);
-                // Flush per event. Batching would add a scheduling quantum of
-                // latency to every keystroke, which you feel while typing.
                 target.output.flush();
             } catch (InterruptedException e) {
                 return;
@@ -295,9 +316,12 @@ final class H264Stream implements Runnable {
                 socket = Secure.connect(prefs, host, port, 5000);
                 activeSocket = socket;
                 opened = true;
+                everOpened = true;
                 consecutiveFailures = 0;
                 outputTarget = new OutputTarget(socket, socket.getOutputStream());
                 if (Prefs.laptopAudio(prefs)) sendAudio(true);
+                java.util.function.BooleanSupplier mobile = onMobileData;
+                if (mobile != null && mobile.getAsBoolean()) sendNetwork(true);
                 report("streaming");
                 pump(socket.getInputStream());
             } catch (Throwable t) {
@@ -344,8 +368,7 @@ final class H264Stream implements Runnable {
             int n = in.read(chunk);
             if (n < 0) throw new Exception("host closed the connection");
             totalBytes += n;
-            append(chunk, n);
-            drainNals();
+            splitter.feed(chunk, n);
 
             long now = System.nanoTime();
             if (now - lastReport > 250_000_000L) {
@@ -356,29 +379,8 @@ final class H264Stream implements Runnable {
     }
 
     // ------------------------------------------------------------------ //
-    // Annex-B parsing
+    // Access units
     // ------------------------------------------------------------------ //
-    private void append(byte[] data, int n) {
-        int needed = Math.addExact(len, n);
-        if (needed > buf.length) {
-            byte[] bigger = new byte[grownCapacity(buf.length, needed)];
-            System.arraycopy(buf, 0, bigger, 0, len);
-            buf = bigger;
-        }
-        System.arraycopy(data, 0, buf, len, n);
-        len += n;
-    }
-
-    static int grownCapacity(int current, int needed) {
-        if (needed < 0 || needed > MAX_STREAM_BUFFER) {
-            throw new IllegalArgumentException("H.264 stream unit exceeds "
-                    + MAX_STREAM_BUFFER + " bytes");
-        }
-        if (needed <= current) return current;
-        long doubled = (long) current * 2L;
-        return (int) Math.min(MAX_STREAM_BUFFER, Math.max(doubled, needed));
-    }
-
     static int nextAccessUnitBytes(int current, int nalLength, int nalCount) {
         if (current < 0 || nalLength < 1 || nalCount < 0
                 || nalCount >= MAX_ACCESS_UNIT_NALS) {
@@ -392,48 +394,6 @@ final class H264Stream implements Runnable {
         return (int) next;
     }
 
-    /** Index of the next 00 00 01 at or after {@code from}, or -1. */
-    private int findStartCode(int from) {
-        for (int i = Math.max(from, 0); i + 2 < len; i++) {
-            if (buf[i] == 0 && buf[i + 1] == 0 && buf[i + 2] == 1) return i;
-        }
-        return -1;
-    }
-
-    /**
-     * Emit every complete NAL currently buffered.
-     *
-     * A NAL is only complete once the *next* start code has arrived, so the tail
-     * of the buffer is always left behind for the next read.
-     */
-    private void drainNals() {
-        int first = findStartCode(0);
-        if (first < 0) return;
-
-        int cursor = first;
-        while (true) {
-            int payloadStart = cursor + 3;
-            int next = findStartCode(payloadStart);
-            if (next < 0) break;
-
-            // A 4-byte start code is 00 00 00 01; the extra zero belongs to the
-            // start code, not to the NAL that precedes it.
-            int payloadEnd = next;
-            while (payloadEnd > payloadStart && buf[payloadEnd - 1] == 0) payloadEnd--;
-
-            if (payloadEnd > payloadStart) {
-                byte[] nal = new byte[payloadEnd - payloadStart];
-                System.arraycopy(buf, payloadStart, nal, 0, nal.length);
-                onNal(nal);
-            }
-            cursor = next;
-        }
-
-        // Compact: keep from the last (incomplete) start code onward.
-        System.arraycopy(buf, cursor, buf, 0, len - cursor);
-        len -= cursor;
-    }
-
     private void onNal(byte[] nal) {
         int type = nal[0] & 0x1F;
         if (type == 6) {
@@ -444,7 +404,15 @@ final class H264Stream implements Runnable {
             }
             byte[] pcm = AudioOut.pcmFrom(nal);
             if (pcm != null) {
-                audio.play(pcm);
+                // Audio is a side channel: an AudioTrack the system refuses
+                // (no resources, a call in progress) must cost the sound, not
+                // drop the whole stream into a reconnect loop.
+                try {
+                    audio.play(pcm);
+                } catch (RuntimeException e) {
+                    Log.w(TAG, "audio failed; retrying on the next slice", e);
+                    audio.release();
+                }
                 return;
             }
         }
@@ -517,10 +485,15 @@ final class H264Stream implements Runnable {
             // so the qti vendor key is the one that actually lands.
             fmt.setInteger("vendor.qti-ext-dec-low-latency.enable", 1);
 
-            codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
-            codec.configure(fmt, surface, null, 0);
-            codec.start();
-            Log.i(TAG, "decoder configured: " + codec.getName());
+            MediaCodec c = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
+            c.configure(fmt, surface, null, 0);
+            c.start();
+            codec = c;
+            // Frames go to the screen the moment they are decoded. Draining only
+            // when the next frame was queued showed every frame a frame late.
+            outputThread = new Thread(() -> outputLoop(c), "folddeck-render");
+            outputThread.start();
+            Log.i(TAG, "decoder configured: " + c.getName());
         } catch (Throwable t) {
             Log.e(TAG, "configure failed", t);
             releaseCodec();
@@ -532,8 +505,9 @@ final class H264Stream implements Runnable {
             // Release completed output before asking for more input. Otherwise a
             // full output side can make dequeueInputBuffer() fail, and returning
             // there would prevent the output side from ever being drained.
-            int idx = dequeueAfterDrain(this::drainOutputs,
-                    () -> codec.dequeueInputBuffer(0));
+            // The render thread frees buffers continuously, so waiting a little
+            // beats dropping: a dropped frame smears until the next keyframe.
+            int idx = codec.dequeueInputBuffer(20_000);
             if (idx < 0) {
                 dropped++;
                 return;
@@ -546,34 +520,39 @@ final class H264Stream implements Runnable {
             long ptsUs = System.nanoTime() / 1000;
             codec.queueInputBuffer(idx, 0, au.length, ptsUs,
                     keyframe ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0);
-            drainOutputs();
         } catch (Throwable t) {
             Log.e(TAG, "queue failed", t);
             releaseCodec();
         }
     }
 
-    static int dequeueAfterDrain(Runnable drain, java.util.function.IntSupplier dequeue) {
-        drain.run();
-        return dequeue.getAsInt();
-    }
-
-    private void drainOutputs() {
-        while (true) {
-            int out = codec.dequeueOutputBuffer(outputInfo, 0);
+    private void outputLoop(MediaCodec c) {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY);
+        MediaCodec.BufferInfo outputInfo = new MediaCodec.BufferInfo();
+        while (codec == c) {
+            int out;
+            try {
+                out = c.dequeueOutputBuffer(outputInfo, 20_000);
+            } catch (IllegalStateException released) {
+                return;
+            }
             if (out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                MediaFormat fmt = codec.getOutputFormat();
+                MediaFormat fmt = c.getOutputFormat();
                 if (sizeListener != null) {
                     sizeListener.onVideoSize(fmt.getInteger(MediaFormat.KEY_WIDTH),
                             fmt.getInteger(MediaFormat.KEY_HEIGHT));
                 }
                 continue;
             }
-            if (out < 0) return;
+            if (out < 0) continue;
             recordDecodeTime(System.nanoTime() / 1000 - outputInfo.presentationTimeUs);
             // Render immediately. Timestamped release is right for playback but
             // adds avoidable scheduling latency to an interactive desktop.
-            codec.releaseOutputBuffer(out, true);
+            try {
+                c.releaseOutputBuffer(out, true);
+            } catch (IllegalStateException released) {
+                return;
+            }
             decoded++;
         }
     }
@@ -599,7 +578,7 @@ final class H264Stream implements Runnable {
     }
 
     private void reset() {
-        len = 0;
+        splitter.reset();
         auNals.clear();
         auBytes = 0;
         auHasVcl = false;
@@ -607,11 +586,15 @@ final class H264Stream implements Runnable {
     }
 
     private void releaseCodec() {
-        if (codec != null) {
-            try { codec.stop(); } catch (Throwable ignored) { }
-            try { codec.release(); } catch (Throwable ignored) { }
-            codec = null;
+        MediaCodec c = codec;
+        if (c == null) return;
+        codec = null;   // the render thread exits within one 20 ms poll
+        Thread t = outputThread;
+        if (t != null) {
+            try { t.join(100); } catch (InterruptedException ignored) { }
         }
+        try { c.stop(); } catch (Throwable ignored) { }
+        try { c.release(); } catch (Throwable ignored) { }
     }
 
     private static void closeQuietly(Socket s) {

@@ -1,7 +1,7 @@
-"""Theme SEI round trip: splice the palette into a real H.264 capture the way
-pump() does, split it the way H264Stream.drainNals() does, and check that the
-palette comes out intact and every access unit is byte-identical to the stream
-without it.
+"""Wire round trip: convert a real FLV capture the way pump() does (flv_frames,
+palette between frames, an AUD after every unit), split it the way the phone's
+AnnexB splitter does, and check the palette comes out intact and the video NALs
+are byte-identical to ffmpeg's own Annex-B output for the same encode.
 
     python3 test_theme.py
 """
@@ -9,7 +9,9 @@ import os
 import subprocess
 import tempfile
 
-from stream import THEME_UUID, splice_nal, theme_nal
+import io
+
+from stream import AUD, THEME_UUID, flv_frames, theme_nal
 
 
 def nals(data: bytes):
@@ -50,30 +52,35 @@ with tempfile.TemporaryDirectory() as tmp:
     nal = theme_nal(colors)
     assert theme_nal(os.path.join(tmp, "missing.toml")) == b""
 
-video = subprocess.run(
-    ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
-     "-i", "testsrc=size=640x360:rate=30", "-frames:v", "90",
-     "-c:v", "libx264", "-g", "30", "-bf", "0", "-f", "h264", "-"],
-    capture_output=True, check=True).stdout
+def encode(fmt: str) -> bytes:
+    return subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+         "-i", "testsrc=size=640x360:rate=30", "-frames:v", "90",
+         "-c:v", "libx264", "-g", "30", "-bf", "0", "-f", fmt, "-"],
+        capture_output=True, check=True).stdout
 
-chunks = [video[i:i + 4096] for i in range(0, len(video), 4096)]
-assert len(chunks) > 3, "capture too small to splice mid-stream"
-pending, sent = [nal, None, None, nal], []
-for n, chunk in enumerate(chunks):
-    if n < len(pending) and pending[n]:
-        chunk = splice_nal(chunk, pending[n], first=n == 0)
-        assert chunk is not None
-    sent.append(chunk)
-stream = b"".join(sent)
 
+video = encode("h264")
+frames = []
+try:
+    for frame in flv_frames(io.BytesIO(encode("flv"))):
+        frames.append(frame)
+except EOFError:
+    pass
+assert len(frames) == 90, len(frames)
+assert all(sum(1 for n in nals(f) if n[0] & 0x1F in (1, 5)) == 1 for f in frames), \
+    "each FLV tag must be exactly one picture"
+stream = nal + AUD + b"".join(f + AUD for f in frames[:45]) + nal + AUD + \
+    b"".join(f + AUD for f in frames[45:])
 got = nals(stream)
 palettes = [p for p in map(theme_from, got) if p is not None]
-video_nals = [n for n in got if theme_from(n) is None]
+video_nals = [n for n in got if theme_from(n) is None and n[0] & 0x1F != 9]
 
 assert len(palettes) == 2, palettes
 assert palettes[0].startswith("accent=#3CBF5C\ncolor1=#010101\n"), palettes[0]
 assert "rgba" not in palettes[0] and len(palettes[0]) + 16 > 255
 assert b"\x00\x00" not in nal[4:], "payload would need emulation prevention"
-assert video_nals == nals(video), "splice changed the video"
+# x264 repeats SPS/PPS in-band before each IDR; flv_frames re-inserts them.
+assert video_nals == nals(video), "conversion changed the video"
 print(f"ok: {len(video_nals)} video NALs unchanged, palette of "
       f"{palettes[0].count(chr(10))} colours delivered twice")

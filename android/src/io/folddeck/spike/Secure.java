@@ -143,6 +143,9 @@ final class Secure {
         boolean connected = false;
         try {
             raw.setTcpNoDelay(true);
+            // DSCP CS6: Wi-Fi WMM voice category, the shortest airtime wait.
+            // Upstream here is only input, so it costs nobody bandwidth.
+            raw.setTrafficClass(0xC0);
             raw.setReceiveBufferSize(1 << 20);
             raw.connect(new InetSocketAddress(host, port), timeoutMs);
 
@@ -172,6 +175,50 @@ final class Secure {
                 }
                 try { raw.close(); } catch (Exception ignored) { }
             }
+        }
+    }
+
+    /**
+     * Whether host:port presents the certificate with this fingerprint. Only a
+     * TLS handshake: it pins nothing and sends no hello, so the host neither
+     * pairs nor hands it the stream. For checking that the home address is the
+     * same laptop before moving a live stream onto it.
+     */
+    static boolean presents(String host, int port, String fingerprint, int timeoutMs) {
+        if (fingerprint == null) return false;
+        final String[] seen = {null};
+        TrustManager[] capture = {new X509TrustManager() {
+            @Override public void checkServerTrusted(X509Certificate[] chain, String type)
+                    throws CertificateException {
+                if (chain == null || chain.length == 0) throw new CertificateException("no cert");
+                seen[0] = sha256(chain[0].getEncoded());
+                // Refuse anything else, so the handshake never completes to a stranger.
+                if (!constantTimeEquals(fingerprint, seen[0])) {
+                    throw new CertificateException("not this host");
+                }
+            }
+            @Override public void checkClientTrusted(X509Certificate[] chain, String type)
+                    throws CertificateException {
+                throw new CertificateException("client mode only");
+            }
+            @Override public X509Certificate[] getAcceptedIssuers() {
+                return new X509Certificate[0];
+            }
+        }};
+        try (Socket raw = new Socket()) {
+            raw.connect(new InetSocketAddress(host, port), timeoutMs);
+            raw.setSoTimeout(timeoutMs);
+            SSLContext ctx = SSLContext.getInstance("TLS");
+            ctx.init(null, capture, new SecureRandom());
+            try (SSLSocket tls = (SSLSocket) ctx.getSocketFactory()
+                    .createSocket(raw, host, port, false)) {
+                tls.setEnabledProtocols(requiredProtocols());
+                tls.setUseClientMode(true);
+                tls.startHandshake();
+                return true;
+            }
+        } catch (Exception e) {
+            return false;
         }
     }
 

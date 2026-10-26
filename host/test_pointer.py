@@ -18,7 +18,7 @@ import socket
 import struct
 import threading
 
-from stream import MSG_PTR_ABS, MSG_PTR_ABS16, input_reader
+from stream import MSG_PTR_ABS16, input_reader
 from uinput import ABS_RANGE, U16_MAX
 
 
@@ -28,11 +28,6 @@ class FakePointer:
     def __init__(self):
         self.calls = []
         self.axes = []
-
-    def move(self, x, y):
-        self.calls.append(("move", x, y))
-        # Mirror VirtualPointer.move: permille in, u16 through to move_abs.
-        self.move_abs(x * U16_MAX // 1000, y * U16_MAX // 1000)
 
     def move_abs(self, x, y):
         self.calls.append(("move_abs", x, y))
@@ -96,17 +91,24 @@ def main() -> int:
     b.close()
     assert ptr.calls == [("move_abs", 12345, 54321)], ptr.calls
 
-    # The old permille message still works, so an APK built before this one
-    # keeps driving a host built after it.
-    ptr = drive(struct.pack(">BHH", MSG_PTR_ABS, 500, 250))
-    assert ptr.calls[0] == ("move", 500, 250), ptr.calls
-    assert abs(ptr.axes[0][0] - ABS_RANGE // 2) <= 2, ptr.axes[0]
-    assert abs(ptr.axes[0][1] - ABS_RANGE // 4) <= 2, ptr.axes[0]
+    # The retired permille type (2) is now unknown: a hard stop, not a misparse.
+    ptr = drive(struct.pack(">BHH", 2, 500, 250) + abs16(1, 1))
+    assert ptr.calls == [], ptr.calls
 
     # An unknown type is still a hard stop rather than a misparse.
     ptr = drive(bytes([99, 0, 0, 0, 0]) + abs16(1, 1))
     assert ptr.calls == [], ptr.calls
 
+    # A desync must end the whole stream, not just the reader: otherwise the
+    # video plays on and the phone's input is silently dead.
+    a, b = socket.socketpair()
+    t = threading.Thread(target=input_reader,
+                         args=(a, None, None, threading.Event(), threading.Lock()))
+    t.start()
+    b.sendall(bytes([99]))
+    t.join(2)
+    b.settimeout(2)
+    assert b.recv(1) == b"", "desync left the connection open"
     print("test_pointer ok")
     return 0
 

@@ -32,8 +32,6 @@ final class Prefs {
     static final String PORT_HOME = "port_home";
     static final String HOST_AWAY = "host_away";
     static final String PORT_AWAY = "port_away";
-    /** Whatever was last typed into the address box, verbatim, to prefill it. */
-    static final String LAST = "last";
 
     static final String AUTO_CONNECT = "auto_connect";
     static final String LAPTOP_LAYOUT = "laptop_layout";
@@ -54,7 +52,7 @@ final class Prefs {
 
     /** What the deck shows below the desktop, per posture. */
     static final int LAYOUT_BOTH = 0, LAYOUT_KEYBOARD = 1, LAYOUT_TRACKPAD = 2,
-            LAYOUT_MONITOR = 3;
+            LAYOUT_MONITOR = 3, LAYOUT_SPLIT = 4;
     static final int POSTURE_COVER = 0, POSTURE_LANDSCAPE = 1, POSTURE_PORTRAIT = 2;
     static final String[] LAYOUT_KEYS = {"layout_cover", "layout_landscape", "layout_portrait"};
     /** Where the desktop sits in spare space: 0 start, 1 centre, 2 end. */
@@ -76,6 +74,8 @@ final class Prefs {
     /** Where the cover screen's monitor/keyboard button was dragged to, 0..1 of its travel. */
     static final String COVER_TOGGLE_X = "cover_toggle_x";
     static final String COVER_TOGGLE_Y = "cover_toggle_y";
+    static final String THEATRE_TOGGLE_X = "theatre_toggle_x";
+    static final String THEATRE_TOGGLE_Y = "theatre_toggle_y";
 
     /** The laptop's Omarchy palette as last sent down the stream, "key=#rrggbb" lines. */
     static final String THEME = "theme";
@@ -165,15 +165,20 @@ final class Prefs {
         int fallback = posture == POSTURE_LANDSCAPE && !trackpadDeck(p)
                 ? LAYOUT_KEYBOARD : LAYOUT_BOTH;
         int v = p.getInt(LAYOUT_KEYS[posture], fallback);
-        return v >= LAYOUT_BOTH && v <= LAYOUT_MONITOR ? v : fallback;
+        return v >= LAYOUT_BOTH && v <= LAYOUT_SPLIT ? v : fallback;
     }
 
     static boolean layoutHasKeyboard(int layout) {
-        return layout == LAYOUT_BOTH || layout == LAYOUT_KEYBOARD;
+        return layout == LAYOUT_BOTH || layout == LAYOUT_KEYBOARD || layout == LAYOUT_SPLIT;
     }
 
     static boolean layoutHasTrackpad(int layout) {
-        return layout == LAYOUT_BOTH || layout == LAYOUT_TRACKPAD;
+        return layout == LAYOUT_BOTH || layout == LAYOUT_TRACKPAD || layout == LAYOUT_SPLIT;
+    }
+
+    /** Keyboard in two halves with the trackpad between them. */
+    static boolean layoutSplit(int layout) {
+        return layout == LAYOUT_SPLIT;
     }
 
     static int desktopAlign(SharedPreferences p) {

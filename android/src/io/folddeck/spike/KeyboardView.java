@@ -6,6 +6,7 @@ import android.graphics.Paint;
 import android.graphics.RectF;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.SparseArray;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
@@ -68,7 +69,11 @@ class KeyboardView extends View {
     private final Map<Integer, Integer> modState = new HashMap<>();
     private final Map<Integer, Runnable> repeats = new HashMap<>();
 
-    private final Paint fill = new Paint();
+    private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Bounce bounce = new Bounce();
+    private final float density;
+    /** Width of the channel down the middle when split; 0 = one block. */
+    private int splitGap;
     private final Paint edge = new Paint();
     private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -87,6 +92,7 @@ class KeyboardView extends View {
 
     KeyboardView(Context context) {
         super(context);
+        density = context.getResources().getDisplayMetrics().density;
         text.setTextAlign(Paint.Align.CENTER);
         text.setTypeface(Ui.MONO);
         edge.setStyle(Paint.Style.STROKE);
@@ -119,6 +125,20 @@ class KeyboardView extends View {
         invalidate();
     }
 
+    /** Split the board down the middle around a channel this wide (0 = whole). */
+    void setSplitGap(int px) {
+        if (px == splitGap) return;
+        releaseAll();   // keys are about to move under any held finger
+        splitGap = px;
+        onSizeChanged(getWidth(), getHeight(), getWidth(), getHeight());
+        invalidate();
+    }
+
+    /** Space between caps for a board this wide; the split trackpad matches it. */
+    float keyGap(int width) {
+        return Math.max(2f, width * 0.0022f * gapScale) + Ui.CAP_DEPTH_DP * density * 0.5f;
+    }
+
     // ------------------------------------------------------------------ //
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
@@ -126,7 +146,7 @@ class KeyboardView extends View {
         caps.clear();
         if (w <= 0 || h <= 0) return;
 
-        gap = Math.max(2f, w * 0.0022f * gapScale);
+        gap = keyGap(w);
         Ev.Key[][] layout = showFnRow ? Ev.LAYOUT
                 : java.util.Arrays.copyOfRange(Ev.LAYOUT, 1, Ev.LAYOUT.length);
         int rows = layout.length;
@@ -134,6 +154,13 @@ class KeyboardView extends View {
         // Every row sums to ROW_UNITS, so one unit width serves all rows and the
         // columns line up the way they do on a real board.
         float unit = (w - gap * (Ev.ROW_UNITS + 1)) / Ev.ROW_UNITS;
+
+        if (splitGap > 0) {
+            layoutSplit(layout, w);
+            text.setTextSize(rowHeight * 0.30f * labelScale);
+            nubRadius = 0f;   // G and H are apart; the trackpad between them takes its job
+            return;
+        }
 
         float y = gap;
         for (Ev.Key[] row : layout) {
@@ -152,6 +179,102 @@ class KeyboardView extends View {
         text.setTextSize(rowHeight * 0.30f * labelScale);
         placeNub();
 
+    }
+
+    /**
+     * Two halves either side of the channel. Rows break where a touch typist's
+     * hands do -- 6|7, T|Y, G|H, B|N, F6|F7 -- and the space bar is cut in two.
+     * Each half keeps one key unit so its columns line up; a row that is short
+     * of the widest one gives the difference to its widest key (Shift, Enter,
+     * Backspace, the space halves), ties going to the outer edge.
+     */
+    private void layoutSplit(Ev.Key[][] layout, int w) {
+        List<List<float[]>> sides = new ArrayList<>();   // per side: per row widths
+        List<List<List<Ev.Key>>> keys = new ArrayList<>();
+        float[] maxUnits = halfUnits(layout, sides, keys);
+        // One key unit for both halves, set by the fuller one, so keys are the
+        // same size either side. Each half hugs its outer edge; the trackpad
+        // takes everything between (see splitEdges), so it grows by whatever
+        // the emptier half no longer needs.
+        float step = splitStep(w, gap, maxUnits);
+        float unit = step - gap;
+        for (int side = 0; side < 2; side++) {
+            float origin = side == 0 ? 0 : w - (gap + maxUnits[1] * step);
+            float y = gap;
+            for (int r = 0; r < layout.length; r++) {
+                float[] widths = sides.get(side).get(r);
+                float sum = 0;
+                for (float v : widths) sum += v;
+                if (widths.length > 0) {
+                    int widest = 0;
+                    for (int i = 0; i < widths.length; i++) {
+                        boolean wider = widths[i] > widths[widest];
+                        boolean tieOuter = widths[i] == widths[widest] && side == 1;
+                        if (wider || tieOuter) widest = i;
+                    }
+                    widths[widest] += maxUnits[side] - sum;
+                }
+                float x = origin + gap;
+                List<Ev.Key> half = keys.get(side).get(r);
+                for (int i = 0; i < widths.length; i++) {
+                    float kw = widths[i] * unit + gap * (widths[i] - 1);
+                    Cap cap = new Cap();
+                    cap.key = half.get(i);
+                    cap.rect.set(x, y, x + kw, y + rowHeight);
+                    caps.add(cap);
+                    x += kw + gap;
+                }
+                y += rowHeight + gap;
+            }
+        }
+    }
+
+    /** Key units per split half, [left, right]; fills per-row widths and keys if given. */
+    private static float[] halfUnits(Ev.Key[][] layout, List<List<float[]>> sides,
+                                     List<List<List<Ev.Key>>> keys) {
+        for (int side = 0; sides != null && side < 2; side++) {
+            sides.add(new ArrayList<>());
+            keys.add(new ArrayList<>());
+        }
+        float[] maxUnits = new float[2];
+        for (Ev.Key[] row : layout) {
+            List<List<Ev.Key>> halves = Ev.splitRow(row);
+            for (int side = 0; side < 2; side++) {
+                List<Ev.Key> half = halves.get(side);
+                float[] widths = new float[half.size()];
+                float sum = 0;
+                for (int i = 0; i < widths.length; i++) {
+                    widths[i] = half.get(i).code == Ev.SPACE ? Ev.SPACE_HALF : half.get(i).width;
+                    sum += widths[i];
+                }
+                maxUnits[side] = Math.max(maxUnits[side], sum);
+                if (sides != null) {
+                    sides.get(side).add(widths);
+                    keys.get(side).add(half);
+                }
+            }
+        }
+        return maxUnits;
+    }
+
+    /** One unit+gap step for both halves: the fuller half fills its side exactly. */
+    private float splitStep(int w, float g, float[] maxUnits) {
+        float sideW = (w - splitGap) / 2f;
+        return (sideW - g) / Math.max(1f, Math.max(maxUnits[0], maxUnits[1]));
+    }
+
+    /**
+     * Where the split halves end, in this view's x, for a board w wide: the
+     * trackpad fills [left, right]. Wider than the nominal channel by the room
+     * the emptier half gives up.
+     */
+    float[] splitEdges(int w) {
+        Ev.Key[][] layout = showFnRow ? Ev.LAYOUT
+                : java.util.Arrays.copyOfRange(Ev.LAYOUT, 1, Ev.LAYOUT.length);
+        float[] m = halfUnits(layout, null, null);
+        float g = keyGap(w);
+        float step = splitStep(w, g, m);
+        return new float[]{g + m[0] * step, w - (g + m[1] * step)};
     }
 
     private void placeNub() {
@@ -178,16 +301,27 @@ class KeyboardView extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         canvas.drawColor(Ui.BG);
-        float inset = edge.getStrokeWidth() / 2f;
+        long now = SystemClock.uptimeMillis();
+        float lift = Ui.CAP_DEPTH_DP * density / 2f;
         for (Cap cap : caps) {
-            fill.setColor(colourFor(cap.key));
-            canvas.drawRect(cap.rect, fill);
-            edge.setColor(edgeFor(cap.key));
-            canvas.drawRect(cap.rect.left + inset, cap.rect.top + inset,
-                    cap.rect.right - inset, cap.rect.bottom - inset, edge);
+            float s = bounce.scale(cap.key.code, now);
+            boolean scaled = s != 1f;
+            if (scaled) {
+                canvas.save();
+                canvas.scale(s, s, cap.rect.centerX(), cap.rect.centerY());
+            }
+            boolean down = held.contains(cap.key.code);
+            Ui.drawCap(canvas, cap.rect.left, cap.rect.top, cap.rect.right, cap.rect.bottom,
+                    colourFor(cap.key), edgeFor(cap.key), down, density, fill);
+            // Legends ride the cap: up with the raised body, down when it sinks.
+            canvas.save();
+            canvas.translate(0, down ? lift : -lift);
             drawLegends(canvas, cap);
+            canvas.restore();
+            if (scaled) canvas.restore();
         }
         drawNub(canvas);
+        if (bounce.animating(now)) postInvalidateOnAnimation();
     }
 
     private void drawLegends(Canvas canvas, Cap cap) {
@@ -270,7 +404,7 @@ class KeyboardView extends View {
 
     private int edgeFor(Ev.Key key) {
         return held.contains(key.code) || isArmedOrLocked(key.code)
-                ? Ui.ACCENT : Ui.mix(Ui.BG, Ui.TEXT, 0.20f);
+                ? Ui.ACCENT : Ui.LINE;
     }
 
     // ------------------------------------------------------------------ //
@@ -279,6 +413,9 @@ class KeyboardView extends View {
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
             case MotionEvent.ACTION_POINTER_DOWN: {
+                if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                    requestUnbufferedDispatch(event);   // no wait for the next frame
+                }
                 int idx = event.getActionIndex();
                 press(event.getPointerId(idx), event.getX(idx), event.getY(idx));
                 break;
@@ -334,6 +471,7 @@ class KeyboardView extends View {
         Press p = new Press();
         p.cap = cap;
         byPointer.put(pointerId, p);
+        bounce.press(cap.key.code, SystemClock.uptimeMillis());
         if (haptics) performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
 
         int code = cap.key.code;
@@ -377,6 +515,7 @@ class KeyboardView extends View {
         }
 
         int code = p.cap.key.code;
+        bounce.release(code, SystemClock.uptimeMillis());
 
         if (code == Ev.LOCAL_FN) {
             held.remove(code);
