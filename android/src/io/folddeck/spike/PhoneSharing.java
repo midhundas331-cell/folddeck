@@ -53,7 +53,8 @@ final class PhoneSharing {
             main.postDelayed(this, 250);
         }
     };
-    private volatile AudioRecord microphone;
+    private volatile AudioRecord microphone;   // recording now (read by the UI check)
+    private volatile Thread micThread;         // non-null while the mic is wanted
     private volatile int cameraGeneration;
     private CameraDevice camera;
     private CameraCaptureSession session;
@@ -268,7 +269,7 @@ final class PhoneSharing {
         int next = supported ? gate.active(android.os.SystemClock.elapsedRealtime()) : 0;
         if (!permitted(2)) next &= ~2;
         if (!permitted(4)) next &= ~4;
-        if ((next & 2) != 0) startMic(); else if (microphone != null) stopMic();
+        if ((next & 2) != 0) startMic(); else if (micThread != null) stopMic();
         if ((next & 4) != 0) startCamera(); else if (cameraStarting) stopCamera();
         live = next;
         if (supported) status = "Clipboard " + ((ready & 1) != 0 ? "synced" : "off")
@@ -303,42 +304,57 @@ final class PhoneSharing {
         });
     }
 
+    /**
+     * Create and start the recorder on its own thread: DEMAND handling never blocks
+     * the UI thread, and the first PCM leaves as soon as the HAL delivers it.
+     */
     private void startMic() {
-        if (microphone != null) return;
+        if (micThread != null) return;
         int revision = gate.revision;
-        AudioRecord created = null;
-        try {
-            int min = AudioRecord.getMinBufferSize(48000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
-            AudioRecord recorder = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 48000,
-                    AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(min, 9600));
-            created = recorder;
-            if (recorder.getState() != AudioRecord.STATE_INITIALIZED) throw new IllegalStateException("Microphone unavailable");
-            recorder.startRecording();
-            microphone = recorder;
-            H264Stream target = stream;
-            new Thread(() -> {
+        H264Stream target = stream;
+        long asked = android.os.SystemClock.elapsedRealtime();
+        Thread[] self = new Thread[1];
+        self[0] = new Thread(() -> {
+            AudioRecord recorder = null;
+            try {
+                int min = AudioRecord.getMinBufferSize(48000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+                recorder = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 48000,
+                        AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(min, 9600));
+                long created = android.os.SystemClock.elapsedRealtime();
+                if (recorder.getState() != AudioRecord.STATE_INITIALIZED) throw new IllegalStateException("Microphone unavailable");
+                if (micThread != self[0]) return;
+                recorder.startRecording();
+                long started = android.os.SystemClock.elapsedRealtime();
+                microphone = recorder;
                 byte[] pcm = new byte[1920];
-                try {
-                    while (microphone == recorder) {
-                        int n = recorder.read(pcm, 0, pcm.length);
-                        if (n < 0) throw new IllegalStateException("Microphone read failed: " + n);
-                        if (n > 0 && microphone == recorder) target.sendSharing(SharingProtocol.MIC,
-                                SharingProtocol.tagged(revision, java.util.Arrays.copyOf(pcm, n)));
+                boolean first = true;
+                while (micThread == self[0]) {
+                    int n = recorder.read(pcm, 0, pcm.length);
+                    if (n < 0) throw new IllegalStateException("Microphone read failed: " + n);
+                    if (n == 0 || micThread != self[0]) continue;
+                    target.sendSharing(SharingProtocol.MIC, SharingProtocol.tagged(revision, java.util.Arrays.copyOf(pcm, n)));
+                    if (first) {
+                        first = false;
+                        android.util.Log.i("FoldDeck/Share", "mic: create " + (created - asked) + " ms, start "
+                                + (started - created) + " ms, first PCM " + (android.os.SystemClock.elapsedRealtime() - started) + " ms");
                     }
-                } catch (RuntimeException e) {
-                    if (microphone == recorder) fail(2, e.getMessage(), revision);
-                } finally { recorder.release(); }
-            }, "phone-microphone").start();
-        } catch (RuntimeException e) {
-            if (created != null && microphone != created) created.release();
-            fail(2, "Microphone: " + e.getMessage(), revision);
-        }
+                }
+            } catch (RuntimeException e) {
+                if (micThread == self[0]) fail(2, "Microphone: " + e.getMessage(), revision);
+            } finally {
+                if (microphone == recorder) microphone = null;
+                if (recorder != null) recorder.release();
+            }
+        }, "phone-microphone");
+        micThread = self[0];
+        micThread.start();
     }
 
     private void stopMic() {
+        micThread = null;
         AudioRecord old = microphone;
         microphone = null;
-        if (old != null) try { old.stop(); } catch (RuntimeException ignored) { }
+        if (old != null) try { old.stop(); } catch (RuntimeException ignored) { }   // unblocks read()
     }
 
     private boolean cameraStarting;

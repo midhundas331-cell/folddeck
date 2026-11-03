@@ -197,8 +197,8 @@ class Sharing:
         self.thread.start()
 
     def wake(self):
-        """A capture stream appeared/changed/went: poll demand now and briefly at 50 ms,
-        since the link can turn active a few ms after the event."""
+        """A capture stream appeared/changed/went: poll demand now and back to back for
+        300 ms, since the link turns active some ms after the event."""
         with self.lock:
             self.burst_until = time.monotonic() + 0.3
             self.lock.notify()
@@ -264,7 +264,8 @@ class Sharing:
             while True:
                 with self.lock:
                     if not self.pending and not self.stopped:
-                        self.lock.wait(0.05)
+                        # Short waits while a consumer event is fresh, so the burst polls back to back.
+                        self.lock.wait(0.01 if time.monotonic() < self.burst_until else 0.05)
                     if self.stopped:
                         return
                     pending, self.pending = self.pending, {}
