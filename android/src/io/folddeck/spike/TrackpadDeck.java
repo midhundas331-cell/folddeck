@@ -20,6 +20,13 @@ import android.view.View;
  * ticks at every detent, coasts after a flick and clicks into place.
  */
 final class TrackpadDeck extends View {
+    private boolean inputEnabled = true;
+
+    void setInputEnabled(boolean enabled) {
+        inputEnabled = enabled;
+        if (!enabled) cancelInput();
+    }
+
     interface Listener {
         void onMove(float dx, float dy);
         void onButton(int button, boolean down);
@@ -32,6 +39,7 @@ final class TrackpadDeck extends View {
     private static final class Contact {
         int zone;
         int button;
+        boolean latch, moved;
         float x, y, startX, startY;
     }
 
@@ -67,6 +75,7 @@ final class TrackpadDeck extends View {
     private boolean wheelOnly;
     private final int touchSlop;
     private float sensitivity = 1f;
+    private float wheelWidth = 28f, buttonHeight = 40f;
     private int pressedMask;
     private int motionPointer = -1;
 
@@ -125,6 +134,15 @@ final class TrackpadDeck extends View {
         invalidate();
     }
 
+    void setDimensions(float wheelDp, float buttonDp) {
+        if (wheelWidth == wheelDp && buttonHeight == buttonDp) return;
+        cancelInput();
+        wheelWidth = wheelDp;
+        buttonHeight = buttonDp;
+        onSizeChanged(getWidth(), getHeight(), getWidth(), getHeight());
+        invalidate();
+    }
+
     /** Space between the zones and the edge; the split keyboard matches its key gap. */
     void setInset(float px) {
         if (px == inset) return;
@@ -135,6 +153,7 @@ final class TrackpadDeck extends View {
 
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+        if (w != oldw || h != oldh) cancelInput();
         // Zones are inset from the panel so its accent outline stays visible,
         // the same frame the keyboard and shortcut deck wear.
         layoutZones(w - 2 * inset, h - 2 * inset);
@@ -163,8 +182,8 @@ final class TrackpadDeck extends View {
             return;
         }
         float gap = Math.min(Ui.dp(getContext(), 7), Math.max(inset, Ui.dp(getContext(), 3)));
-        float buttonH = Math.max(Ui.dp(getContext(), 44), h * 0.22f);
-        float railW = showScroll ? Math.max(Ui.dp(getContext(), 40), w * 0.16f) : 0f;
+        float buttonH = Math.min(buttonHeight * density, h * 0.4f);
+        float railW = showScroll ? Math.min(wheelWidth * density, w * 0.3f) : 0f;
         float usableBottom = Math.max(0f, h - buttonH - gap);
         if (showScroll && leftHanded) {
             scroll.set(0, 0, railW, usableBottom);
@@ -182,6 +201,7 @@ final class TrackpadDeck extends View {
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         canvas.drawColor(Ui.BG);
+        if (!ValueAnimator.areAnimatorsEnabled()) bounce.clear();
         long now = SystemClock.uptimeMillis();
         // The pad is flush, like glass set into the palm rest; it lights its rim
         // while a finger is on it.
@@ -191,6 +211,13 @@ final class TrackpadDeck extends View {
             text.setTextSize(Ui.dp(getContext(), 10));
             text.setColor(Ui.TEXT_FAINT);
             canvas.drawText("TRACKPAD", pad.centerX(), pad.top + Ui.dp(getContext(), 20), text);
+            // A quiet etched registration mark gives the glass a centre without
+            // drawing a busy texture beneath the user's fingers.
+            fill.setColor(Ui.mix(Ui.SURFACE, Ui.TEXT, 0.15f));
+            float cx = pad.centerX(), cy = pad.centerY(), tick = Ui.dp(getContext(), 5);
+            float hair = Math.max(1, density * 0.5f);
+            canvas.drawRect(cx - tick, cy - hair / 2, cx + tick, cy + hair / 2, fill);
+            canvas.drawRect(cx - hair / 2, cy - tick, cx + hair / 2, cy + tick, fill);
         }
         if (showScroll) drawWheel(canvas);
         int leftButton = leftHanded ? 2 : 1;
@@ -208,10 +235,22 @@ final class TrackpadDeck extends View {
         Ui.drawCap(canvas, box.left, box.top, box.right, box.bottom,
                 down ? Ui.ACCENT : Ui.SURFACE_HI, down ? Ui.ACCENT : Ui.LINE, down, density, fill);
         text.setTextSize(Ui.dp(getContext(), 11));
-        text.setColor(down ? Ui.BG : Ui.TEXT_DIM);
+        text.setColor(down ? Ui.onAccent() : Ui.TEXT_DIM);
         float sink = down ? Ui.CAP_DEPTH_DP * density / 2 : -Ui.CAP_DEPTH_DP * density / 2;
-        canvas.drawText(label, box.centerX(),
+        float divider = box.right - Math.min(box.width() * 0.44f, 52f * density);
+        float labelWidth = text.measureText(label);
+        if (labelWidth > divider - box.left - 4 * density)
+            text.setTextSize(text.getTextSize() * Math.max(1, divider - box.left - 4 * density) / labelWidth);
+        canvas.drawText(label, (box.left + divider) / 2,
                 box.centerY() + sink - (text.ascent() + text.descent()) / 2f, text);
+        int button = TrackpadState.buttonForVisual(visual, leftHanded);
+        fill.setColor(state.latched(button) ? Ui.onAccent() : Ui.ACCENT);
+        fill.setAlpha(60);
+        canvas.drawRect(divider, box.top + 5 * density, divider + density, box.bottom - 5 * density, fill);
+        text.setTextSize(Math.min(9f * density, box.width() * 0.09f));
+        canvas.drawText(state.latched(button) ? "HELD" : "HOLD", (divider + box.right) / 2,
+                box.centerY() + sink - (text.ascent() + text.descent()) / 2f, text);
+        fill.setAlpha(255);
         canvas.restore();
     }
 
@@ -341,6 +380,7 @@ final class TrackpadDeck extends View {
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
+        if (!inputEnabled) return true;
         // Deliver touches as the panel reports them, not batched to the next
         // frame: up to one frame less input latency, and more samples.
         if (event.getActionMasked() == MotionEvent.ACTION_DOWN) requestUnbufferedDispatch(event);
@@ -376,6 +416,9 @@ final class TrackpadDeck extends View {
             int visual = contact.zone == ZONE_LEFT ? 1 : 2;
             int button = TrackpadState.buttonForVisual(visual, leftHanded);
             contact.button = button;
+            RectF box = visual == 1 ? left : right;
+            contact.latch = contact.x >= box.right - Math.min(box.width() * 0.44f, 52f * density);
+            if (contact.latch) return;
             if (state.press(button) == TrackpadState.DOWN && listener != null) {
                 listener.onButton(button, true);
             }
@@ -408,6 +451,7 @@ final class TrackpadDeck extends View {
             Contact contact = contacts.get(event.getPointerId(i));
             if (contact == null) continue;
             float x = event.getX(i), y = event.getY(i);
+            if (Math.hypot(x - contact.startX, y - contact.startY) > touchSlop) contact.moved = true;
             if (contact.zone == ZONE_PAD
                     && Math.hypot(x - contact.startX, y - contact.startY) > touchSlop) {
                 state.padMoved();
@@ -430,6 +474,18 @@ final class TrackpadDeck extends View {
         contacts.remove(pointerId);
         if (contact.zone == ZONE_LEFT || contact.zone == ZONE_RIGHT) {
             int button = contact.button;
+            if (contact.latch) {
+                if (!contact.moved) {
+                    int transition = state.toggle(button);
+                    if (transition != TrackpadState.NONE && listener != null)
+                        listener.onButton(button, transition == TrackpadState.DOWN);
+                    if (state.held(button)) pressedMask |= 1 << button;
+                    else pressedMask &= ~(1 << button);
+                    if (haptics) performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                    invalidate();
+                }
+                return;
+            }
             bounce.release(contact.zone == ZONE_LEFT ? 1 : 2, SystemClock.uptimeMillis());
             if (state.release(button) == TrackpadState.UP) {
                 pressedMask &= ~(1 << button);

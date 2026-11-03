@@ -124,6 +124,15 @@ final class Secure {
         prefs.edit().remove(pinKey(host, port)).remove(legacyPinKey(host, port)).apply();
     }
 
+    /** Forget every pinned host certificate across all configured routes. */
+    static void clearPins(SharedPreferences prefs) {
+        SharedPreferences.Editor ed = prefs.edit();
+        for (String key : prefs.getAll().keySet()) {
+            if (key.startsWith(PIN_PREFIX)) ed.remove(key);
+        }
+        ed.apply();
+    }
+
     // ------------------------------------------------------------------ //
     /**
      * Connect over TLS, pinning the host certificate, and send the hello.

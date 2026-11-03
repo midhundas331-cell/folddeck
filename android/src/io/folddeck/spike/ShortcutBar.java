@@ -11,6 +11,7 @@ import android.view.ViewGroup;
 import android.view.animation.OvershootInterpolator;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
+import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -40,6 +41,8 @@ import java.util.List;
 class ShortcutBar extends FrameLayout {
 
     interface Listener {
+        void onResize();
+        void onAppSettings();
         void onShortcut(Shortcuts.Item item);
         void onEditShortcuts();
         /** Flip the touch mode; true if it is now TRACKPAD. */
@@ -56,6 +59,7 @@ class ShortcutBar extends FrameLayout {
     private final HorizontalScrollView row;
     private final ScrollView column;
     private final Grid grid;
+    private final LinearLayout tools;
     private final Paint border = new Paint();
     private List<Shortcuts.Item> items;
     private TextView modeCell;
@@ -82,6 +86,11 @@ class ShortcutBar extends FrameLayout {
         addView(row, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
         addView(column, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
         grid = new Grid(c);
+        tools = new LinearLayout(c);
+        tools.setGravity(Gravity.CENTER);
+        addView(tools);
+        styleTools();
+        setBackground(Ui.floatingPanel(Ui.SURFACE, Ui.SEPARATOR, 0.5f, c));
         applyEdges();
         attachGrid();
     }
@@ -117,7 +126,14 @@ class ShortcutBar extends FrameLayout {
     void setCompact(boolean on) {
         if (compact == on) return;
         compact = on;
-        rebuild();
+        // Resizing crosses this threshold repeatedly. Keep the controls and drag state alive.
+        for (View v : grid.order) {
+            TextView t = (TextView) v;
+            t.setTextSize(compact ? Ui.T_MICRO : Ui.T_LABEL);
+            int pad = Ui.dp(getContext(), compact ? 3 : 10);
+            t.setPadding(pad, 0, pad, 0);
+        }
+        styleModeCell();
     }
 
     void setEdges(boolean left, boolean top, boolean right, boolean bottom) {
@@ -128,8 +144,8 @@ class ShortcutBar extends FrameLayout {
     }
 
     private void applyEdges() {
-        int w = Ui.dp(getContext(), BORDER_DP);
-        setPadding(edges[0] ? w : 0, edges[1] ? w : 0, edges[2] ? w : 0, edges[3] ? w : 0);
+        int w = Ui.dp(getContext(), 4);
+        setPadding(w, w, w, w);
         invalidate();
     }
 
@@ -145,6 +161,8 @@ class ShortcutBar extends FrameLayout {
     /** Recreate the buttons, e.g. after a theme change: they bake colours in. */
     void rebuild() {
         if (items == null) return;
+        setBackground(Ui.floatingPanel(Ui.SURFACE, Ui.SEPARATOR, 0.5f, getContext()));
+        styleTools();
         // Kept across the rebuild, so a theme change does not throw the deck back.
         final int sx = row.getScrollX(), sy = column.getScrollY();
 
@@ -159,10 +177,20 @@ class ShortcutBar extends FrameLayout {
         cells.add(modeCell);
 
         for (Shortcuts.Item it : items) {
-            TextView t = cell(it.label, v -> {
+            boolean system = it.label.equals("Menu") && it.chord.equals("SUPER+SPACE");
+            TextView t = cell(system ? "System" : it.label, v -> {
                 v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
                 listener.onShortcut(it);
             });
+            String label = system ? "System" : it.label;
+            android.text.SpannableString caption = new android.text.SpannableString(
+                    label + "\n" + (system ? "LAPTOP" : it.chord.replace("SUPER", "◆").replace("SHIFT", "⇧")));
+            caption.setSpan(new android.text.style.RelativeSizeSpan(0.66f), label.length() + 1,
+                    caption.length(), 0);
+            caption.setSpan(new android.text.style.ForegroundColorSpan(Ui.TEXT_FAINT), label.length() + 1,
+                    caption.length(), 0);
+            t.setText(caption);
+            t.setContentDescription("Laptop: " + label + ", " + it.chord);
             t.setTag(it);
             t.setOnLongClickListener(grid::startDrag);
             cells.add(t);
@@ -180,22 +208,85 @@ class ShortcutBar extends FrameLayout {
         });
     }
 
+    private void styleTools() {
+        if (tools == null) return;
+        tools.removeAllViews();
+        tools.setBackground(Ui.rounded(Ui.mix(Ui.SURFACE, Ui.ACCENT, 0.06f),
+                Ui.mix(Ui.LINE, Ui.ACCENT, 0.2f), 9, getContext()));
+        tools.addView(tool("↔", "Resize", "Resize workspace", listener::onResize));
+        tools.addView(tool("", "App", "Folddeck app settings", listener::onAppSettings));
+    }
+
+    private View tool(String icon, String label, String description, Runnable action) {
+        Context c = getContext();
+        LinearLayout button = new LinearLayout(c);
+        button.setOrientation(LinearLayout.VERTICAL);
+        button.setGravity(Gravity.CENTER);
+        TextView glyph = Ui.text(c, icon, 17, Ui.ACCENT);
+        if (label.equals("App")) glyph.setTypeface(Ui.ICONS);
+        glyph.setGravity(Gravity.CENTER);
+        glyph.setIncludeFontPadding(false);
+        button.addView(glyph);
+        TextView text = Ui.text(c, label, 10, Ui.TEXT_DIM);
+        text.setTypeface(Ui.MONO);
+        text.setGravity(Gravity.CENTER);
+        text.setIncludeFontPadding(false);
+        button.addView(text);
+        button.setContentDescription(description);
+        button.setFocusable(true);
+        button.setBackground(Ui.pressable(Ui.rounded(android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT, 8, c)));
+        button.setOnClickListener(v -> action.run());
+        Motion.press(button);
+        return button;
+    }
+
+    @Override protected void onMeasure(int ws, int hs) {
+        int w = MeasureSpec.getSize(ws), h = MeasureSpec.getSize(hs);
+        boolean stacked = vertical && w < Ui.dp(getContext(), 176);
+        tools.setOrientation(stacked ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+        for (int i = 0; i < tools.getChildCount(); i++) {
+            View child = tools.getChildAt(i);
+            LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) child.getLayoutParams();
+            int cw = stacked ? LayoutParams.MATCH_PARENT : 0;
+            int ch = stacked ? 0 : LayoutParams.MATCH_PARENT;
+            if (lp.width != cw || lp.height != ch || lp.weight != 1f) {
+                lp.width = cw; lp.height = ch; lp.weight = 1f;
+                child.setLayoutParams(lp);
+            }
+        }
+        int gap = Ui.dp(getContext(), 6);
+        int inset = getPaddingLeft() + getPaddingRight();
+        boolean top = vertical || twoRows;
+        int toolW = top ? Math.max(0, w - inset) : Ui.dp(getContext(), 112);
+        int toolH = top ? Ui.dp(getContext(), stacked ? 96 : 48) : Math.max(0, h - inset);
+        size(tools, toolW, toolH, 0, 0);
+        int dx = top ? 0 : toolW + gap, dy = top ? toolH + gap : 0;
+        size(row, Math.max(0, w - inset - dx), Math.max(0, h - inset - dy), dx, dy);
+        size(column, Math.max(0, w - inset - dx), Math.max(0, h - inset - dy), dx, dy);
+        super.onMeasure(ws, hs);
+    }
+
+    private void size(View v, int w, int h, int x, int y) {
+        LayoutParams lp = (LayoutParams) v.getLayoutParams();
+        if (lp.width == w && lp.height == h && lp.leftMargin == x && lp.topMargin == y) return;
+        lp.width = w; lp.height = h; lp.leftMargin = x; lp.topMargin = y;
+        v.setLayoutParams(lp);
+    }
+
     private TextView cell(String label, View.OnClickListener onClick) {
         Context c = getContext();
         TextView t = Ui.text(c, label, compact ? Ui.T_MICRO : Ui.T_LABEL, Ui.TEXT);
         t.setTypeface(Ui.MONO);
-        if (compact) {
-            t.setMaxLines(2);
-        } else {
-            t.setSingleLine(true);
-        }
+        t.setMaxLines(2);
+        t.setFocusable(true);
         t.setEllipsize(android.text.TextUtils.TruncateAt.END);
         t.setGravity(Gravity.CENTER);
         t.setLineSpacing(0, 1f);
         int pad = Ui.dp(c, compact ? 3 : 10);
         t.setPadding(pad, 0, pad, 0);
         // The same keycap as the keyboard and trackpad buttons: one deck, one look.
-        t.setBackground(Ui.cap(Ui.SURFACE_HI, Ui.LINE, c));
+        t.setBackground(Ui.pressable(Ui.rounded(Ui.SURFACE_HI, Ui.SEPARATOR, 8, c)));
         Motion.press(t);
         t.setOnClickListener(onClick);
         return t;
@@ -203,19 +294,20 @@ class ShortcutBar extends FrameLayout {
 
     /** Restyled in place rather than rebuilt, so toggling does not lose the scroll. */
     private void styleModeCell() {
+        if (modeCell == null) return;
         modeCell.setText(trackpad ? (compact ? "TRACK" : "TRACKPAD") : "DIRECT");
         modeCell.setTypeface(Ui.MONO_BOLD);
         modeCell.setTextColor(trackpad ? Ui.ACCENT : Ui.TEXT_DIM);
-        modeCell.setBackground(Ui.cap(trackpad ? Ui.SELECTED : Ui.SURFACE_HI,
-                trackpad ? Ui.ACCENT : Ui.LINE, getContext()));
+        modeCell.setContentDescription("Screen touch mode: " + (trackpad ? "trackpad" : "direct"));
+        modeCell.setBackground(Ui.pressable(Ui.rounded(trackpad ? Ui.SELECTED : Ui.SURFACE_HI,
+                trackpad ? Ui.ACCENT : Ui.LINE, 8, getContext())));
     }
 
     @Override
     protected void dispatchDraw(Canvas canvas) {
-        canvas.drawColor(Ui.BG);
         super.dispatchDraw(canvas);
         int w = Ui.dp(getContext(), BORDER_DP), W = getWidth(), H = getHeight();
-        border.setColor(Ui.ACCENT);
+        border.setColor(Ui.mix(Ui.BG, Ui.ACCENT, 0.30f));
         if (edges[0]) canvas.drawRect(0, 0, w, H, border);
         if (edges[1]) canvas.drawRect(0, 0, W, w, border);
         if (edges[2]) canvas.drawRect(W - w, 0, W, H, border);
@@ -271,9 +363,10 @@ class ShortcutBar extends FrameLayout {
             int minW = Ui.dp(getContext(), CELL_MIN_W_DP), minH = Ui.dp(getContext(), CELL_MIN_H_DP);
             int w, h;
             if (!vertical) {
-                cols = ShortcutGrid.columns(n, twoRows);
-                int shelfRows = ShortcutGrid.rows(n, twoRows);
                 h = MeasureSpec.getSize(hs);
+                boolean doubleRow = twoRows && h >= 2 * Ui.dp(getContext(), 44) + line;
+                cols = ShortcutGrid.columns(n, doubleRow);
+                int shelfRows = ShortcutGrid.rows(n, doubleRow);
                 int natural = cols * minW + (cols - 1) * line;
                 w = MeasureSpec.getMode(ws) == MeasureSpec.EXACTLY
                         ? Math.max(MeasureSpec.getSize(ws), natural) : natural;
@@ -312,13 +405,13 @@ class ShortcutBar extends FrameLayout {
                 int oldX = v.getLeft(), oldY = v.getTop();
                 boolean placed = v.getWidth() > 0;
                 v.layout(x, y, right, bottom);
-                if (animateNext && placed && (oldX != x || oldY != y)) {
+                if (animateNext && android.animation.ValueAnimator.areAnimatorsEnabled()
+                        && placed && (oldX != x || oldY != y)) {
                     v.setTranslationX(v.getTranslationX() + oldX - x);
                     v.setTranslationY(v.getTranslationY() + oldY - y);
-                    v.setScaleX(0.9f);
-                    v.setScaleY(0.9f);
                     v.animate().translationX(0).translationY(0).scaleX(1).scaleY(1)
-                            .setDuration(220).setInterpolator(new OvershootInterpolator(1.6f)).start();
+                            .setDuration(220).setInterpolator(new android.view.animation.PathInterpolator(
+                                    0.16f, 1f, 0.3f, 1f)).start();
                 }
             }
             animateNext = false;
@@ -328,8 +421,7 @@ class ShortcutBar extends FrameLayout {
         protected void dispatchDraw(Canvas canvas) {
             // The 1px board lines are the gaps between cells showing this colour;
             // an empty slot at the end of an odd column is painted back to ground.
-            canvas.drawColor(Ui.mix(Ui.BG, Ui.TEXT, 0.18f));
-            paint.setColor(Ui.BG);
+            paint.setColor(Ui.SURFACE);
             for (int slot = order.size(); slot < rows() * cols; slot++) {
                 int x = (slot % cols) * (cellW + line), y = (slot / cols) * (cellH + line);
                 canvas.drawRect(x, y, getWidth(), getHeight(), paint);

@@ -25,11 +25,9 @@ import java.util.Map;
  * instead of assembled — a card in Settings and a card on Home are the same
  * object, so they cannot drift apart as either screen is edited.
  *
- * The look keeps Omarchy's restrained palette, borders and dense control rhythm,
- * then adds a small product-level depth system: 7dp floating-card corners,
- * top-lit gradients, and 3/6/9dp elevation tiers. Keyboard caps remain machined
- * and square. System sans carries product copy while JetBrains Mono is reserved
- * for machine data, keys and terminal-like controls.
+ * Omarchy supplies the live palette; Folddeck supplies the material language:
+ * softly lit 16dp panels, quiet borders, and 1/2/6dp elevation tiers. Bundled
+ * Inter carries product copy; JetBrains Mono carries addresses and key legends.
  *
  * There is no res/values/styles.xml because there is no Gradle: aapt2 is only
  * fed the launcher icon, and everything else is built in Java. This class is
@@ -54,6 +52,7 @@ final class Ui {
     static int BG, SURFACE, SURFACE_HI, SELECTED, LINE;
     static int TEXT, TEXT_DIM, TEXT_FAINT;
     static int ACCENT, OK, WARN, ERR;
+    private static int ACCENT_INK;
     /** The hairline between menu sections: 20% foreground, as Omarchy's menu. */
     static int SEPARATOR;
     /** Ripple tint: Omarchy's pressed fill, 22% foreground. */
@@ -80,19 +79,20 @@ final class Ui {
 
         BG = bg;
         TEXT = fg;
-        SURFACE = mix(bg, fg, 0.04f);
-        SURFACE_HI = mix(bg, fg, 0.08f);
+        SURFACE = mix(bg, fg, 0.045f);
+        SURFACE_HI = mix(bg, fg, 0.085f);
         SELECTED = mix(bg, fg, 0.18f);
-        LINE = mix(bg, fg, 0.40f);
-        TEXT_DIM = mix(bg, fg, 0.72f);
-        TEXT_FAINT = mix(bg, fg, 0.48f);
+        LINE = mix(bg, fg, 0.19f);
+        TEXT_DIM = mix(bg, fg, 0.82f);
+        TEXT_FAINT = mix(bg, fg, 0.74f);
         PRESS = (fg & 0x00ffffff) | 0x38000000;
 
         ACCENT = pick(m, "accent", fg);
+        ACCENT_INK = contrastInk(ACCENT);
         ERR = pick(m, "red", pick(m, "color1", ACCENT));
         OK = pick(m, "green", pick(m, "color2", ACCENT));
         WARN = pick(m, "yellow", pick(m, "color3", ACCENT));
-        SEPARATOR = mix(bg, fg, 0.20f);
+        SEPARATOR = mix(bg, fg, 0.12f);
     }
 
     private static int pick(Map<String, Integer> m, String key, int fallback) {
@@ -108,15 +108,15 @@ final class Ui {
                 Math.round(Color.blue(a) + (Color.blue(b) - Color.blue(a)) * t));
     }
 
-    // Type scale. Four sizes, not fifteen — the restraint is the point.
-    static final float T_TITLE = 19f, T_BODY = 15f,
+    // Shared type scale; the dashboard adds its own display-size headline.
+    static final float T_TITLE = 24f, T_BODY = 15f,
             T_LABEL = 13f, T_MICRO = 11f;
-    static final float FLOAT_LOW_DP = 3f;
-    static final float FLOAT_MID_DP = 6f;
-    static final float FLOAT_ELEVATION_DP = 9f;
-    static final float FLOAT_RADIUS_DP = 7f;
+    static final float FLOAT_LOW_DP = 1f;
+    static final float FLOAT_MID_DP = 2f;
+    static final float FLOAT_ELEVATION_DP = 6f;
+    static final float FLOAT_RADIUS_DP = 16f;
 
-    /** Product copy is quiet system sans; machine data and controls retain Omarchy mono. */
+    /** System sans is only a fallback; bundled type is stable on vendor ROMs. */
     static Typeface FONT = Typeface.create("sans-serif", Typeface.NORMAL);
     static Typeface FONT_BOLD = Typeface.create("sans-serif", Typeface.BOLD);
     static Typeface MONO = Typeface.MONOSPACE, MONO_BOLD = Typeface.MONOSPACE;
@@ -124,6 +124,14 @@ final class Ui {
     static Typeface ICONS = Typeface.MONOSPACE;
 
     static void loadFonts(Context c) {
+        try {
+            FONT = new Typeface.Builder(c.getAssets(), "fonts/Inter.ttf")
+                    .setFontVariationSettings("'wght' 420, 'opsz' 16").build();
+            FONT_BOLD = new Typeface.Builder(c.getAssets(), "fonts/Inter.ttf")
+                    .setFontVariationSettings("'wght' 650, 'opsz' 24").build();
+        } catch (RuntimeException e) {
+            android.util.Log.w("FoldDeck/Ui", "product font missing, using system sans", e);
+        }
         try {
             MONO = Typeface.createFromAsset(c.getAssets(), "fonts/JetBrainsMono-Regular.ttf");
             MONO_BOLD = Typeface.createFromAsset(c.getAssets(), "fonts/JetBrainsMono-Bold.ttf");
@@ -139,7 +147,7 @@ final class Ui {
     }
 
     // ------------------------------------------------------------------ //
-    // Shapes — all square, as Omarchy's are.
+    // Shapes — rounded product surfaces and compact machined deck controls.
     // ------------------------------------------------------------------ //
     static GradientDrawable square(int fill) {
         GradientDrawable d = new GradientDrawable();
@@ -154,11 +162,39 @@ final class Ui {
         return d;
     }
 
+    static GradientDrawable rounded(int fill, int stroke, float radiusDp, Context c) {
+        GradientDrawable d = outlined(fill, stroke, 0.5f, c);
+        d.setCornerRadius(dp(c, radiusDp));
+        return d;
+    }
+
+    /** Opaque page backdrop, including when a live desktop is underneath. */
+    static GradientDrawable backdrop() {
+        return new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{mix(BG, ACCENT, 0.055f), BG, BG});
+    }
+
+    /** Choose legible text for a filled accent in both dark and light themes. */
+    static int onAccent() {
+        return ACCENT_INK;
+    }
+
+    private static int contrastInk(int colour) {
+        double luminance = 0;
+        for (int i = 0; i < 3; i++) {
+            double channel = ((colour >> (16 - i * 8)) & 255) / 255.0;
+            channel = channel <= 0.04045 ? channel / 12.92
+                    : Math.pow((channel + 0.055) / 1.055, 2.4);
+            luminance += channel * (i == 0 ? 0.2126 : i == 1 ? 0.7152 : 0.0722);
+        }
+        return luminance > 0.179 ? Color.BLACK : Color.WHITE;
+    }
+
     /** A restrained raised surface: light catches the top, shadow leaves below. */
     static GradientDrawable floatingPanel(int fill, int stroke, float widthDp, Context c) {
         GradientDrawable d = new GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{mix(fill, TEXT, 0.09f), fill, mix(fill, BG, 0.22f)});
+                new int[]{mix(fill, ACCENT, 0.045f), fill, mix(fill, BG, 0.12f)});
         d.setShape(GradientDrawable.RECTANGLE);
         d.setCornerRadius(dp(c, FLOAT_RADIUS_DP));
         d.setStroke(Math.max(1, dp(c, widthDp)), stroke);
@@ -189,7 +225,7 @@ final class Ui {
     // Keycaps — the one raised-control look shared by the keyboard, the
     // trackpad's buttons and the shortcut chips, so the deck reads as one object.
     // ------------------------------------------------------------------ //
-    static final float CAP_RADIUS_DP = 5f, CAP_DEPTH_DP = 2f;
+    static final float CAP_RADIUS_DP = 7f, CAP_DEPTH_DP = 1.5f;
 
     /**
      * A keycap in {@code l,t,r,b}: a darker lip below (its depth), a body with a
@@ -270,7 +306,8 @@ final class Ui {
     static TextView sectionLabel(Context c, String content) {
         TextView t = text(c, content.toUpperCase(java.util.Locale.US), T_MICRO, TEXT_FAINT);
         t.setLetterSpacing(0.14f);
-        t.setTypeface(MONO_BOLD);
+        t.setTypeface(FONT_BOLD);
+        t.setAccessibilityHeading(true);
         t.setPadding(dp(c, 4), dp(c, 20), 0, dp(c, 8));
         return t;
     }
@@ -285,15 +322,16 @@ final class Ui {
     /**
      * The one loud button on a screen. There should never be two.
      *
-     * Omarchy has no filled buttons; its loudest control is the lock screen's
-     * field, outlined in the accent. This is that outline.
+     * A solid accent surface, with contrast chosen from the actual live palette.
      */
     static TextView primaryButton(Context c, String label, Runnable onClick) {
-        TextView b = text(c, label, T_BODY, ACCENT);
+        TextView b = text(c, label, T_BODY, onAccent());
         b.setTypeface(FONT_BOLD);
         b.setGravity(Gravity.CENTER);
         b.setPadding(dp(c, 24), dp(c, 16), dp(c, 24), dp(c, 16));
-        b.setBackground(pressable(floatingPanel(mix(BG, ACCENT, 0.10f), ACCENT, 2, c)));
+        b.setBackground(pressable(rounded(ACCENT, ACCENT, 14, c)));
+        b.setMinimumHeight(dp(c, 56));
+        b.setFocusable(true);
         elevate(b, c);
         b.setClickable(true);
         Motion.press(b);
@@ -306,8 +344,9 @@ final class Ui {
         TextView b = text(c, label, T_BODY, TEXT);
         b.setGravity(Gravity.CENTER);
         b.setPadding(dp(c, 24), dp(c, 16), dp(c, 24), dp(c, 16));
-        b.setBackground(pressable(floatingPanel(SURFACE, LINE, 1, c)));
-        elevate(b, c);
+        b.setBackground(pressable(rounded(SURFACE, LINE, 14, c)));
+        b.setMinimumHeight(dp(c, 52));
+        b.setFocusable(true);
         b.setClickable(true);
         Motion.press(b);
         b.setOnClickListener(v -> onClick.run());
@@ -331,30 +370,27 @@ final class Ui {
         LinearLayout r = new LinearLayout(c);
         r.setOrientation(LinearLayout.HORIZONTAL);
         r.setGravity(Gravity.CENTER_VERTICAL);
-        r.setMinimumHeight(dp(c, 60));
-        r.setPadding(dp(c, 14), dp(c, 10), dp(c, 14), dp(c, 10));
+        r.setMinimumHeight(dp(c, 68));
+        r.setPadding(dp(c, 16), dp(c, 14), dp(c, 16), dp(c, 14));
         if (onClick != null) {
-            // Omarchy's menu cursor: the row fills and its label turns accent.
-            android.graphics.drawable.StateListDrawable bg =
-                    new android.graphics.drawable.StateListDrawable();
-            bg.addState(new int[]{android.R.attr.state_pressed}, square(SELECTED));
-            bg.addState(new int[0], square(Color.TRANSPARENT));
-            r.setBackground(bg);
+            r.setBackground(pressable(rounded(Color.TRANSPARENT, Color.TRANSPARENT, 12, c)));
             r.setClickable(true);
+            r.setFocusable(true);
             r.setOnClickListener(v -> onClick.run());
+            Motion.press(r);
         }
 
         LinearLayout stack = new LinearLayout(c);
         stack.setOrientation(LinearLayout.VERTICAL);
         stack.setDuplicateParentStateEnabled(true);
-        TextView title = text(c, titleText, 17f, TEXT);
-        title.setTypeface(MONO);
+        TextView title = text(c, titleText, 16f, TEXT);
+        title.setTypeface(FONT_BOLD);
         title.setTextColor(pressedAccent(TEXT));
         title.setDuplicateParentStateEnabled(true);
         stack.addView(title);
         if (subtitle != null) {
             TextView sub = text(c, subtitle, T_LABEL, TEXT_FAINT);
-            sub.setTypeface(MONO);
+            sub.setTypeface(FONT);
             sub.setPadding(0, dp(c, 2), 0, 0);
             stack.addView(sub);
         }
@@ -371,41 +407,43 @@ final class Ui {
     }
 
     // ------------------------------------------------------------------ //
-    // Omarchy menu — the look of `omarchy menu`, shared by Home, Settings
-    // and the guide.
+    // Omarchy menu — the look of `omarchy menu`, shared by Home and Settings.
     // ------------------------------------------------------------------ //
     static final String ICON_CHEVRON = "\udb80\udd42";
 
-    /** Frame a column as the menu's card: square, 2px foreground border. */
+    /** Shared softly lit card treatment. */
     static void menuCard(LinearLayout column) {
         Context c = column.getContext();
-        column.setBackground(outlined(BG, TEXT, 2, c));
-        column.setPadding(dp(c, 14), dp(c, 10), dp(c, 14), dp(c, 18));
+        column.setBackground(floatingPanel(SURFACE, SEPARATOR, 0.5f, c));
+        column.setPadding(dp(c, 12), dp(c, 12), dp(c, 12), dp(c, 20));
         ((LinearLayout.LayoutParams) column.getLayoutParams()).setMargins(
                 dp(c, 16), dp(c, 20), dp(c, 16), dp(c, 32));
     }
 
     /** The dim "Setup…" line at the top of the card. */
     static TextView menuHeading(Context c, String text) {
-        TextView t = text(c, text, 17f, TEXT_FAINT);
-        t.setTypeface(MONO);
-        t.setPadding(dp(c, 2), dp(c, 10), 0, dp(c, 10));
+        TextView t = text(c, text, 28f, TEXT);
+        t.setTypeface(FONT_BOLD);
+        t.setLetterSpacing(-0.025f);
+        t.setPadding(dp(c, 16), dp(c, 12), dp(c, 16), dp(c, 18));
         return t;
     }
 
     /** A bold dim heading over a section of rows. */
     static TextView menuSection(Context c, String text) {
-        TextView h = text(c, text, T_LABEL + 1, TEXT_FAINT);
-        h.setTypeface(MONO_BOLD);
-        h.setPadding(dp(c, 14), dp(c, 6), dp(c, 14), dp(c, 2));
+        TextView h = text(c, text.toUpperCase(java.util.Locale.US), T_MICRO, TEXT_DIM);
+        h.setTypeface(FONT_BOLD);
+        h.setAccessibilityHeading(true);
+        h.setLetterSpacing(0.1f);
+        h.setPadding(dp(c, 16), dp(c, 18), dp(c, 16), dp(c, 8));
         return h;
     }
 
     /** The small note under a section. */
     static TextView menuNote(Context c, String text) {
         TextView f = text(c, text, T_LABEL, TEXT_FAINT);
-        f.setTypeface(MONO);
-        f.setPadding(dp(c, 14), dp(c, 2), dp(c, 14), dp(c, 8));
+        f.setTypeface(FONT);
+        f.setPadding(dp(c, 16), dp(c, 8), dp(c, 16), dp(c, 16));
         return f;
     }
 
@@ -423,6 +461,7 @@ final class Ui {
     static TextView chevron(Context c) {
         TextView t = text(c, ICON_CHEVRON, 18f, TEXT_FAINT);
         t.setTypeface(ICONS);
+        t.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         t.setPadding(dp(c, 8), 0, 0, 0);
         return t;
     }
@@ -430,15 +469,17 @@ final class Ui {
     /** A menu row: icon, label, chevron. Child 1 is the label stack. */
     static LinearLayout menuItem(Context c, String icon, String title, Runnable onClick) {
         LinearLayout row = row(c, title, null, chevron(c), onClick);
-        TextView glyph = text(c, icon, 30f, TEXT);
+        TextView glyph = text(c, icon, 22f, ACCENT);
         glyph.setTypeface(ICONS);
-        glyph.setTextColor(pressedAccent(TEXT));
+        glyph.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        glyph.setTextColor(pressedAccent(ACCENT));
         glyph.setDuplicateParentStateEnabled(true);
         glyph.setGravity(Gravity.CENTER);
         glyph.setIncludeFontPadding(false);
-        row.addView(glyph, 0, new LinearLayout.LayoutParams(dp(c, 44),
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-        ((LinearLayout.LayoutParams) row.getChildAt(1).getLayoutParams()).leftMargin = dp(c, 8);
+        glyph.setBackground(rounded(mix(SURFACE, ACCENT, 0.09f),
+                Color.TRANSPARENT, 12, c));
+        row.addView(glyph, 0, new LinearLayout.LayoutParams(dp(c, 40), dp(c, 40)));
+        ((LinearLayout.LayoutParams) row.getChildAt(1).getLayoutParams()).leftMargin = dp(c, 12);
         return row;
     }
 
@@ -448,15 +489,13 @@ final class Ui {
                 new int[]{ACCENT, normal});
     }
 
-    /**
-     * Omarchy's ToggleSwitch: a square track with a square knob. Off is the
-     * normal fill with a 1px border and a dimmed knob; on is the selected fill
-     * and a foreground knob at the right.
-     */
+    /** Animated pill switch with a full 48dp touch target. */
     static View toggle(Context c, boolean on, java.util.function.Consumer<Boolean> onChange) {
         View v = new View(c) {
             final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
             boolean checked = on;
+            float position = on ? 1f : 0f;
+            android.animation.ValueAnimator slide;
 
             {
                 setClickable(true);
@@ -465,9 +504,29 @@ final class Ui {
                 setOnClickListener(x -> {
                     checked = !checked;
                     setStateDescription(checked ? "On" : "Off");
-                    invalidate();
+                    if (slide != null) slide.cancel();
+                    float target = checked ? 1f : 0f;
+                    if (android.animation.ValueAnimator.areAnimatorsEnabled()) {
+                        slide = android.animation.ValueAnimator.ofFloat(position, target);
+                        slide.setDuration(190);
+                        slide.setInterpolator(new android.view.animation.PathInterpolator(0.2f, 0f, 0.2f, 1f));
+                        slide.addUpdateListener(a -> {
+                            position = (float) a.getAnimatedValue();
+                            invalidate();
+                        });
+                        slide.start();
+                    } else {
+                        position = target;
+                        invalidate();
+                    }
                     onChange.accept(checked);
                 });
+            }
+
+            @Override protected void onDetachedFromWindow() {
+                if (slide != null) slide.cancel();
+                position = checked ? 1f : 0f;
+                super.onDetachedFromWindow();
             }
 
             @Override
@@ -482,42 +541,37 @@ final class Ui {
 
             @Override
             protected void onDraw(Canvas canvas) {
-                float w = getWidth(), h = getHeight(), border = Math.max(1, dp(c, 1));
+                float w = getWidth(), h = dp(c, 28), y = (getHeight() - h) / 2f;
                 p.setStyle(Paint.Style.FILL);
-                p.setColor(checked ? SELECTED : SURFACE);
-                canvas.drawRect(0, 0, w, h, p);
-                p.setStyle(Paint.Style.STROKE);
-                p.setStrokeWidth(border);
-                p.setColor(checked ? TEXT : LINE);
-                canvas.drawRect(border / 2, border / 2, w - border / 2, h - border / 2, p);
+                p.setColor(mix(SELECTED, ACCENT, position));
+                canvas.drawRoundRect(0, y, w, y + h, h / 2, h / 2, p);
                 float knob = h * 0.72f, inset = (h - knob) / 2f;
-                float left = checked ? w - knob - inset : inset;
+                float left = inset + position * (w - knob - inset * 2);
                 p.setStyle(Paint.Style.FILL);
-                p.setColor(checked ? TEXT : TEXT_FAINT);
-                canvas.drawRect(left, inset, left + knob, inset + knob, p);
+                p.setColor(checked ? onAccent() : TEXT_DIM);
+                canvas.drawCircle(left + knob / 2, y + h / 2, knob / 2, p);
             }
         };
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(c, 54), dp(c, 28));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(c, 48), dp(c, 48));
         lp.leftMargin = dp(c, 12);
         v.setLayoutParams(lp);
         return v;
     }
 
-    /**
-     * Omarchy's ButtonGroup: square cells in a row; the chosen one wears the
-     * selected fill, a foreground border and the accent label.
-     */
+    /** Segmented selection with filled accent and a small settling animation. */
     static View choice(Context c, String[] labels, int selected,
                        java.util.function.IntConsumer onChange) {
         LinearLayout row = new LinearLayout(c);
+        row.setBaselineAligned(false);
         TextView[] cells = new TextView[labels.length];
         int[] chosen = {selected};
         Runnable paint = () -> {
             for (int i = 0; i < cells.length; i++) {
                 boolean on = i == chosen[0];
-                cells[i].setTextColor(on ? ACCENT : TEXT_DIM);
-                cells[i].setTypeface(on ? MONO_BOLD : MONO);
-                cells[i].setBackground(outlined(on ? SELECTED : SURFACE, on ? TEXT : LINE, 1, c));
+                cells[i].setTextColor(on ? onAccent() : TEXT_DIM);
+                cells[i].setTypeface(on ? FONT_BOLD : FONT);
+                cells[i].setBackground(pressable(rounded(on ? ACCENT : SURFACE_HI,
+                        on ? ACCENT : SEPARATOR, 10, c)));
                 cells[i].setSelected(on);
             }
         };
@@ -526,15 +580,18 @@ final class Ui {
             TextView t = text(c, labels[i], T_LABEL + 1, TEXT_DIM);
             t.setGravity(Gravity.CENTER);
             t.setMaxLines(1);
+            t.setAutoSizeTextTypeUniformWithConfiguration(9, 14, 1, TypedValue.COMPLEX_UNIT_SP);
+            t.setFocusable(true);
             t.setPadding(dp(c, 10), 0, dp(c, 10), 0);
             t.setOnClickListener(v -> {
                 chosen[0] = index;
                 paint.run();
+                Motion.select(t);
                 onChange.accept(index);
             });
             cells[i] = t;
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, dp(c, 42));
+                    LinearLayout.LayoutParams.WRAP_CONTENT, dp(c, 48));
             if (i > 0) lp.leftMargin = dp(c, 5);
             row.addView(t, lp);
         }
@@ -634,19 +691,19 @@ final class Ui {
                 p.setStyle(Paint.Style.FILL);
                 p.setColor(SELECTED);
                 canvas.drawRoundRect(r, r - t, w - r, r + t, t, t, p);
-                p.setColor(TEXT);
+                p.setColor(ACCENT);
                 canvas.drawRoundRect(r, r - t, x, r + t, t, t, p);
                 p.setColor(BG);
                 canvas.drawCircle(x, r, knob + ring, p);
-                p.setColor(TEXT);
+                p.setColor(ACCENT);
                 canvas.drawCircle(x, r, knob, p);
             }
         };
-        v.setLayoutParams(new LinearLayout.LayoutParams(dp(c, 112), dp(c, 28)));
+        v.setLayoutParams(new LinearLayout.LayoutParams(dp(c, 112), dp(c, 48)));
         return v;
     }
 
-    /** A single-line text field in Omarchy's input chrome. */
+    /** Single-line inset field with a visible keyboard-focus ring. */
     static android.widget.EditText input(Context c, String text, String hint, int inputType) {
         android.widget.EditText e = new android.widget.EditText(c);
         e.setInputType(inputType);
@@ -655,7 +712,11 @@ final class Ui {
         e.setTextColor(TEXT);
         e.setHintTextColor(TEXT_FAINT);
         e.setHint(hint);
-        e.setBackground(outlined(SURFACE_HI, LINE, 1, c));
+        android.graphics.drawable.StateListDrawable field = new android.graphics.drawable.StateListDrawable();
+        field.addState(new int[]{android.R.attr.state_focused}, rounded(SURFACE_HI, ACCENT, 12, c));
+        field.addState(new int[0], rounded(BG, LINE, 12, c));
+        e.setBackground(field);
+        e.setTextSize(TypedValue.COMPLEX_UNIT_SP, T_BODY);
         e.setPadding(dp(c, 14), dp(c, 14), dp(c, 14), dp(c, 14));
         e.setText(text);
         return e;
@@ -678,10 +739,14 @@ final class Ui {
      * like a mistake. Every screen puts its content in one of these.
      */
     static LinearLayout readableColumn(Context c) {
+        return readableColumn(c, 640);
+    }
+
+    static LinearLayout readableColumn(Context c, int maxWidthDp) {
         LinearLayout col = new LinearLayout(c) {
             @Override
             protected void onMeasure(int widthSpec, int heightSpec) {
-                int max = dp(getContext(), 560);
+                int max = dp(getContext(), maxWidthDp);
                 int w = MeasureSpec.getSize(widthSpec);
                 if (w > max) {
                     widthSpec = MeasureSpec.makeMeasureSpec(max, MeasureSpec.EXACTLY);
@@ -696,7 +761,46 @@ final class Ui {
     // ------------------------------------------------------------------ //
     // Wordmark
     // ------------------------------------------------------------------ //
-    /** "FOLDDECK" in the block letters of Omarchy's own branding art. */
+    /** A folding-screen monogram paired with an accessible, real-text wordmark. */
+    static View wordmark(Context c, float sizeSp) {
+        LinearLayout brand = new LinearLayout(c);
+        brand.setGravity(Gravity.CENTER_VERTICAL);
+        View symbol = new View(c) {
+            final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            @Override protected void onDraw(Canvas canvas) {
+                float s = getWidth() / 40f;
+                canvas.save();
+                canvas.scale(s, s);
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(mix(BG, ACCENT, 0.14f));
+                canvas.drawRoundRect(0, 0, 40, 40, 12, 12, p);
+                p.setColor(ACCENT);
+                p.setStyle(Paint.Style.STROKE);
+                p.setStrokeWidth(2.2f);
+                p.setStrokeJoin(Paint.Join.ROUND);
+                android.graphics.Path fold = new android.graphics.Path();
+                fold.moveTo(10, 11); fold.lineTo(28, 8); fold.lineTo(28, 22);
+                fold.lineTo(10, 25); fold.close();
+                canvas.drawPath(fold, p);
+                fold.reset();
+                fold.moveTo(10, 25); fold.lineTo(17, 32); fold.lineTo(33, 28);
+                fold.lineTo(28, 22);
+                canvas.drawPath(fold, p);
+                canvas.restore();
+            }
+        };
+        symbol.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        int mark = dp(c, sizeSp * 1.75f);
+        brand.addView(symbol, new LinearLayout.LayoutParams(mark, mark));
+        TextView name = text(c, "Folddeck", sizeSp, TEXT);
+        name.setTypeface(FONT_BOLD);
+        name.setLetterSpacing(-0.04f);
+        name.setIncludeFontPadding(false);
+        name.setPadding(Math.round(mark * 0.3f), 0, 0, 0);
+        brand.addView(name);
+        return brand;
+    }
+
     private static final String[] WORDMARK = {
             "▄████████  ▄███████▄  ▄██        ████████▄  ████████▄  ▄████████  ▄████████  ███   ▄██",
             "███   ███  ███   ███  ███        ███   ███  ███   ███  ███   ███  ███   ███  ███  ▄██▀",
@@ -709,15 +813,14 @@ final class Ui {
     };
 
     /**
-     * Drawn as rectangles on a character grid rather than set as text: block
-     * glyphs only meet edge to edge at a terminal's exact cell height, and a
-     * TextView's line metrics leave hairline gaps between the rows.
+     * FOLDDECK in block letters, the way Omarchy writes its own name: terminal
+     * half-blocks painted as rectangles in the accent, so it scales cleanly.
      */
-    static View wordmark(Context c, int maxWidthDp) {
+    static View blockWordmark(Context c, int maxWidthDp) {
         int widest = 0;
         for (String line : WORDMARK) widest = Math.max(widest, line.length());
         final int cols = widest, rows = WORDMARK.length;
-        return new View(c) {
+        View v = new View(c) {
             final Paint p = new Paint();
 
             @Override
@@ -742,5 +845,7 @@ final class Ui {
                 }
             }
         };
+        v.setContentDescription("FoldDeck");
+        return v;
     }
 }

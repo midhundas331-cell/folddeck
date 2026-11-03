@@ -12,8 +12,8 @@ import java.util.Map;
  * after drawing and keeps invalidating while it is true.
  */
 final class Bounce {
-    static final float DOWN = 0.93f;
-    static final long DOWN_MS = 70, UP_MS = 320;
+    static final float DOWN = 0.975f;
+    static final long DOWN_MS = 70, UP_MS = 240;
 
     private final Map<Integer, long[]> live = new HashMap<>();   // {pressedAt, releasedAt}
 

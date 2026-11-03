@@ -3,6 +3,7 @@ package io.folddeck.spike;
 import android.animation.Animator;
 import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
+import android.animation.ValueAnimator;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
@@ -16,10 +17,12 @@ import java.util.WeakHashMap;
 
 /** Small motion grammar shared by every screen and control. */
 final class Motion {
-    static final float PRESS_SCALE = 0.96f;
+    static final float PRESS_SCALE = 0.975f;
     static final long PRESS_MS = 75;
     static final long RELEASE_MS = 300;
-    static final long ENTER_MS = 220;
+    static final long ENTER_MS = 260;
+    static final long FADE_MS = 200;
+    static final long THEATRE_MS = 340;
     static final long COVER_SWITCH_MS = 260;
     static final float COVER_OVERSHOOT = 1.18f;
 
@@ -119,6 +122,12 @@ final class Motion {
         WeakReference<Animator> priorRef = PRESS_ANIMATORS.get(view);
         Animator prior = priorRef == null ? null : priorRef.get();
         if (prior != null) prior.cancel();
+        if (!ValueAnimator.areAnimatorsEnabled()) {
+            view.setScaleX(1f);
+            view.setScaleY(1f);
+            view.setTranslationZ(0f);
+            return;
+        }
 
         ObjectAnimator sx = ObjectAnimator.ofFloat(view, View.SCALE_X,
                 view.getScaleX(), target);
@@ -136,16 +145,87 @@ final class Motion {
     }
 
     static void enter(View view) {
+        reveal(view, 0, 0, Ui.dp(view.getContext(), 12));
+    }
+
+    /** Shared-axis entry, confined to content above an opaque page background. */
+    static void page(View view, int direction) {
+        reveal(view, 0, Ui.dp(view.getContext(), 20) * direction, 0);
+        // A brief optical settle, only on page content. Never blur the video decoder surface.
+        if (!ValueAnimator.areAnimatorsEnabled()) return;
+        android.graphics.RenderEffect[] blur = new android.graphics.RenderEffect[5];
+        for (int i = 1; i < blur.length; i++) {
+            float radius = i * view.getResources().getDisplayMetrics().density * 0.6f;
+            blur[i] = android.graphics.RenderEffect.createBlurEffect(radius, radius,
+                    android.graphics.Shader.TileMode.CLAMP);
+        }
+        view.setRenderEffect(blur[4]);
+        view.animate().setUpdateListener(a -> {
+            int step = Math.max(0, Math.round(4 * (1f - a.getAnimatedFraction() * 1.5f)));
+            view.setRenderEffect(blur[step]);
+        }).withEndAction(() -> {
+            view.setRenderEffect(null);
+            view.animate().setUpdateListener(null);
+        });
+    }
+
+    static void stagger(android.view.ViewGroup group) {
+        int visible = 0;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View child = group.getChildAt(i);
+            if (child.getVisibility() != View.VISIBLE) continue;
+            reveal(child, Math.min(visible++ * 35L, 105L), 0, Ui.dp(group.getContext(), 14));
+        }
+    }
+
+    private static void reveal(View view, long delay, float x, float y) {
         view.animate().cancel();
+        view.animate().setUpdateListener(null);
+        view.setRenderEffect(null);
+        view.animate().setListener(null).withEndAction(null);
+        view.setScaleX(1f);
+        view.setScaleY(1f);
+        if (!ValueAnimator.areAnimatorsEnabled()) {
+            view.setAlpha(1f);
+            view.setTranslationX(0f);
+            view.setTranslationY(0f);
+            return;
+        }
         view.setAlpha(0f);
-        view.setTranslationY(Ui.dp(view.getContext(), 14));
-        view.setScaleX(0.992f);
-        view.setScaleY(0.992f);
-        view.animate().alpha(1f).translationY(0f).scaleX(1f).scaleY(1f)
+        view.setTranslationX(x);
+        view.setTranslationY(y);
+        view.animate().alpha(1f).translationX(0f).translationY(0f).setStartDelay(delay)
                 .setDuration(ENTER_MS).setInterpolator(spring()).start();
     }
 
+    /**
+     * Fade a whole screen in or out, then run {@code end}. Only ever over an
+     * opaque screen or the deck itself, so the live desktop never shows through
+     * a screen it should not.
+     */
+    static void fade(View view, boolean in, Runnable end) {
+        view.animate().cancel();
+        view.animate().setListener(null).setStartDelay(0);
+        if (!ValueAnimator.areAnimatorsEnabled()) {
+            view.setAlpha(in ? 1f : 0f);
+            if (end != null) end.run();
+            return;
+        }
+        view.animate().alpha(in ? 1f : 0f).setDuration(FADE_MS)
+                .setInterpolator(in ? new DecelerateInterpolator(1.5f)
+                        : new PathInterpolator(0.4f, 0f, 1f, 1f))
+                .withEndAction(end).start();
+    }
+
+    static void select(View view) {
+        if (!ValueAnimator.areAnimatorsEnabled()) return;
+        view.setScaleX(0.97f);
+        view.setScaleY(0.97f);
+        animatePressScale(view, 1f, 200, spring());
+    }
+
     static void shake(View view) {
+        if (!ValueAnimator.areAnimatorsEnabled()) return;
         float d = Ui.dp(view.getContext(), 8);
         ObjectAnimator x = ObjectAnimator.ofFloat(view, View.TRANSLATION_X,
                 0f, -d, d * 0.72f, -d * 0.46f, d * 0.24f, 0f);
@@ -164,7 +244,7 @@ final class Motion {
         view.setAlpha(1f);
         view.setScaleX(1f);
         view.setScaleY(1f);
-        if (!shouldPulse(phase)) return;
+        if (!shouldPulse(phase) || !ValueAnimator.areAnimatorsEnabled()) return;
 
         ObjectAnimator alpha = ObjectAnimator.ofFloat(view, View.ALPHA, 1f, 0.38f);
         ObjectAnimator sx = ObjectAnimator.ofFloat(view, View.SCALE_X, 1f, 1.55f);

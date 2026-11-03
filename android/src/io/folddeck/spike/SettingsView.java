@@ -30,6 +30,7 @@ class SettingsView extends Panel {
         void onAudioChanged(boolean on);
         void onHudChanged();
         void onEditShortcuts();
+        void onResize();
     }
 
     private final Context c;
@@ -38,22 +39,25 @@ class SettingsView extends Panel {
     private final LinearLayout menu;
     private final TextView addressValue, cardAddress;
     private LinearLayout openPage;
+    private final PhoneSharing sharing;
+    private TextView sharingStatus;
+    private final TextView[] sharingValues = new TextView[3];
 
-    SettingsView(Context c, SharedPreferences prefs, Lock lock,
-                 Listener listener, Runnable onBack) {
+    SettingsView(Context c, SharedPreferences prefs, Lock lock, PhoneSharing sharing,
+                  Listener listener, Runnable onBack) {
         super(c, "Settings", onBack);
         this.c = c;
         this.prefs = prefs;
         this.listener = listener;
+        this.sharing = sharing;
 
-        // Omarchy's menu card: a square frame with a 2px border round the list.
         LinearLayout frame = content();
-        Ui.menuCard(frame);
 
         menu = new LinearLayout(c);
         menu.setOrientation(LinearLayout.VERTICAL);
         frame.addView(menu);
-        menu.addView(Ui.menuHeading(c, "Settings…"));
+        menu.addView(Ui.menuHeading(c, "Designed around you."));
+        menu.addView(Ui.menuNote(c, "Fine-tune your workspace, from the first tap to the last keystroke."));
 
         // -------- the laptop -------------------------------------------------- //
         cardAddress = Ui.text(c, "", Ui.T_LABEL, Ui.TEXT_FAINT);
@@ -63,8 +67,8 @@ class SettingsView extends Panel {
         ((LinearLayout) laptop.getChildAt(1)).addView(build);
         cardAddress.setTypeface(Ui.MONO);
         build.setTypeface(Ui.MONO);
+        laptop.setBackground(Ui.floatingPanel(Ui.SURFACE, Ui.LINE, 0.5f, c));
         menu.addView(laptop);
-        menu.addView(Ui.divider(c));
 
         // -------- categories ------------------------------------------------- //
         LinearLayout connection = page("Connection");
@@ -74,12 +78,30 @@ class SettingsView extends Panel {
         LinearLayout shortcuts = page("Shortcuts");
         LinearLayout mouse = page("Mouse");
         LinearLayout security = page("Lock & Security");
+        LinearLayout share = page("Phone Sharing");
+        menu.addView(Ui.sectionLabel(c, "Workspace"));
         menu.addView(category("\udb81\udef3", "Connection", connection));
         menu.addView(category("\udb80\udf79", "Display", screen));
+        menu.addView(category("\udb80\udf22", "Phone Sharing", share));
+        sharingStatus = Ui.text(c, sharing.status, 13, Ui.TEXT_DIM);
+        share.addView(sharingStatus);
+        String[] labels = {"Clipboard sync", "Phone microphone", "Phone camera"};
+        String[] notes = {"Text in both directions · while Folddeck is focused",
+                "Laptop default while connected · captures only when an app uses it",
+                "Front camera · laptop default while connected · idle until used"};
+        for (int i = 0; i < 3; i++) {
+            final int bit = 1 << i;
+            sharingValues[i] = value("");
+            share.addView(group(null, notes[i], Ui.row(c, labels[i], null, sharingValues[i], () -> sharing.toggle(bit))));
+        }
+        share.addView(Ui.menuNote(c, "Tap Disable to keep either input off. Leaving Folddeck or disconnecting stops capture and restores laptop defaults. Apps with a saved device choice may need Folddeck selected once."));
+        updateSharing();
+        menu.addView(Ui.sectionLabel(c, "Input & control"));
         menu.addView(category("\uf11c", "Keyboard", keyboard));
         menu.addView(category("\udb81\udf41", "Trackpad", trackpad));
         menu.addView(category("\udb80\udf7d", "Mouse", mouse));
         menu.addView(category("\udb80\udc3b", "Shortcuts", shortcuts));
+        menu.addView(Ui.sectionLabel(c, "Privacy"));
         menu.addView(category("\ueb11", "Lock & Security", security));
 
         // -------- Connection ------------------------------------------------- //
@@ -99,6 +121,9 @@ class SettingsView extends Panel {
                 })));
 
         // -------- Display ---------------------------------------------------- //
+        screen.addView(group("Layout Studio",
+                "Resize the monitor, keyboard, trackpad and custom bar live. Each posture remembers its own proportions.",
+                Ui.row(c, "Resize Workspace", "Drag to adjust · Reset to auto-fit", chevron(), listener::onResize)));
         String[] presets = {"Both", "Keys", "Pad", "None", "Split"};
         String[] postures = {"Folded", "Open, Sideways", "Open, Upright"};
         View[] postureRows = new View[postures.length];
@@ -131,7 +156,7 @@ class SettingsView extends Panel {
                 "A larger keyboard leaves less room for the laptop screen.",
                 slider("Keyboard Size", Prefs.controlScale(prefs),
                         Prefs.CONTROL_SCALE_MIN, Prefs.CONTROL_SCALE_MAX, false,
-                        v -> prefs.edit().putFloat(Prefs.CONTROL_SCALE, v).apply()),
+                        v -> saveSize(Prefs.CONTROL_SCALE, Prefs.RESIZE_MONITOR, v)),
                 slider("Text Size", Prefs.keyLabelScale(prefs),
                         Prefs.KEY_LABEL_MIN, Prefs.KEY_LABEL_MAX, false,
                         v -> prefs.edit().putFloat(Prefs.KEY_LABEL_SCALE, v).apply()),
@@ -159,7 +184,10 @@ class SettingsView extends Panel {
                         v -> prefs.edit().putFloat(Prefs.TRACKPAD_SENS, v).apply()),
                 slider("Size", Prefs.trackpadSize(prefs),
                         Prefs.TRACKPAD_SIZE_MIN, Prefs.TRACKPAD_SIZE_MAX, false,
-                        v -> prefs.edit().putFloat(Prefs.TRACKPAD_SIZE, v).apply())));
+                        v -> saveSize(Prefs.TRACKPAD_SIZE, Prefs.RESIZE_PAD, v))));
+        trackpad.addView(group("Shape & held buttons",
+                "Layout Studio has Pad height, Wheel width and Buttons height controls. Tap HOLD inside either button to latch it; tap HELD to release.",
+                Ui.row(c, "Resize Trackpad", "Independent height, wheel and buttons", chevron(), listener::onResize)));
         trackpad.addView(group("Point & Click",
                 "Tap with two fingers to right-click.",
                 control("Tap to Click", Prefs.trackpadTap(prefs), Prefs.TRACKPAD_TAP),
@@ -220,27 +248,41 @@ class SettingsView extends Panel {
                         + "is encrypted.",
                 reset));
 
-        // A page opens straight onto its first section, with no divider above it.
-        for (int i = 1; i < frame.getChildCount(); i++) {
-            ((LinearLayout) ((LinearLayout) frame.getChildAt(i)).getChildAt(1)).removeViewAt(0);
+    }
+
+    void updateSharing() {
+        if (sharingStatus == null) return;
+        sharingStatus.setText(sharing.status);
+        for (int i = 0; i < sharingValues.length; i++) if (sharingValues[i] != null) {
+            int bit = 1 << i;
+            sharingValues[i].setText(i == 0 ? (sharing.enabled(bit) ? "On" : "Off")
+                    : sharing.enabled(bit) ? "Disable" : "Enable");
         }
     }
 
     // ------------------------------------------------------------------ //
     // Paging
     // ------------------------------------------------------------------ //
+    private void saveSize(String key, String override, float value) {
+        SharedPreferences.Editor edit = prefs.edit().putFloat(key, value);
+        for (int p = 0; p < Prefs.LAYOUT_KEYS.length; p++) edit.remove(override + p);
+        edit.apply();
+    }
+
     private LinearLayout page(String title) {
         LinearLayout page = new LinearLayout(c);
         page.setOrientation(LinearLayout.VERTICAL);
         page.setVisibility(GONE);
         page.setTag(title);
-        page.addView(Ui.menuHeading(c, title + "…"));
         content().addView(page);
         return page;
     }
 
     private View category(String icon, String title, LinearLayout page) {
-        return Ui.menuItem(c, icon, title, () -> open(page));
+        LinearLayout row = Ui.menuItem(c, icon, title, () -> open(page));
+        row.setBackground(Ui.pressable(Ui.rounded(Ui.SURFACE, Ui.SEPARATOR, 14, c)));
+        row.setLayoutParams(Ui.fillW(c, 6));
+        return row;
     }
 
     private void open(LinearLayout page) {
@@ -248,7 +290,7 @@ class SettingsView extends Panel {
         page.setVisibility(VISIBLE);
         openPage = page;
         showPage((String) page.getTag());
-        Motion.enter(page);
+        Motion.page(page, 1);
     }
 
     @Override
@@ -258,6 +300,7 @@ class SettingsView extends Panel {
         openPage = null;
         menu.setVisibility(VISIBLE);
         showPage("Settings");
+        Motion.page(menu, -1);
         return true;
     }
 
@@ -265,17 +308,18 @@ class SettingsView extends Panel {
     // Building blocks
     // ------------------------------------------------------------------ //
 
-    /**
-     * A section of rows: a bold dim header, the rows flat on the card, and a
-     * note under them. Sections after the first open with Omarchy's divider.
-     */
+    /** Rounded setting group, with its description outside the control surface. */
     private LinearLayout group(String header, String footer, View... rows) {
         LinearLayout wrap = new LinearLayout(c);
         wrap.setOrientation(LinearLayout.VERTICAL);
-        wrap.addView(Ui.divider(c));
         if (header != null) wrap.addView(Ui.menuSection(c, header));
+        LinearLayout card = new LinearLayout(c);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(Ui.rounded(Ui.SURFACE, Ui.SEPARATOR, 16, c));
+        wrap.addView(card, Ui.fillW(c, 8));
         for (View row : rows) {
-            wrap.addView(row, new LinearLayout.LayoutParams(
+            if (card.getChildCount() > 0) card.addView(Ui.divider(c));
+            card.addView(row, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         }
         if (footer != null) wrap.addView(Ui.menuNote(c, footer));
@@ -326,7 +370,7 @@ class SettingsView extends Panel {
         });
         bar.setContentDescription(title);
         bar.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, Ui.dp(c, 28)));
+                LinearLayout.LayoutParams.MATCH_PARENT, Ui.dp(c, 48)));
         return stacked(Ui.row(c, title, null, label, null), bar);
     }
 

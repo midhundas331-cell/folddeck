@@ -57,6 +57,14 @@ final class H264Stream implements Runnable {
     private SizeListener sizeListener;
     private ProblemListener problemListener;
     private ThemeListener themeListener;
+    private java.util.function.Consumer<byte[]> sharingListener;
+    private volatile boolean sharingSupported;
+
+    void setSharingListener(java.util.function.Consumer<byte[]> listener) { sharingListener = listener; }
+
+    void sendSharing(int kind, byte[] data) {
+        if (sharingSupported && outputTarget != null) offer(SharingProtocol.packet(kind, data));
+    }
 
     void setThemeListener(ThemeListener l) {
         this.themeListener = l;
@@ -187,6 +195,7 @@ final class H264Stream implements Runnable {
 
     void stop() {
         running = false;
+        sharingSupported = false;
         closeQuietly(activeSocket);
         Thread writer = writerThread;
         if (writer != null) writer.interrupt();
@@ -347,6 +356,8 @@ final class H264Stream implements Runnable {
                     }
                 }
             } finally {
+                sharingSupported = false;
+                if (sharingListener != null) sharingListener.accept(new byte[]{(byte) SharingProtocol.HELLO, 0});
                 OutputTarget target = outputTarget;
                 if (target != null && target.socket == socket) outputTarget = null;
                 outbox.clear();
@@ -395,6 +406,12 @@ final class H264Stream implements Runnable {
     }
 
     private void onNal(byte[] nal) {
+        byte[] share = SharingProtocol.fromNal(nal);
+        if (share != null) {
+            if (share[0] == SharingProtocol.HELLO) sharingSupported = share.length == 2 && share[1] == 2;
+            if (sharingListener != null) sharingListener.accept(share);
+            return;
+        }
         int type = nal[0] & 0x1F;
         if (type == 6) {
             String palette = themeFrom(nal);

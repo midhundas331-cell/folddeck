@@ -64,6 +64,12 @@ class KeyboardView extends View {
     }
 
     private final List<Cap> caps = new ArrayList<>();
+    private int capIndex;
+    private static final Ev.Key[][] WITHOUT_FN = java.util.Arrays.copyOfRange(Ev.LAYOUT, 1, Ev.LAYOUT.length);
+    private final List<List<float[]>> splitWidths = new ArrayList<>();
+    private final List<List<List<Ev.Key>>> splitKeys = new ArrayList<>();
+    private float[] splitUnits;
+    private boolean splitHasFn;
     private final SparseArray<Press> byPointer = new SparseArray<>();
     private final Set<Integer> held = new HashSet<>();
     private final Map<Integer, Integer> modState = new HashMap<>();
@@ -143,12 +149,11 @@ class KeyboardView extends View {
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         super.onSizeChanged(w, h, oldw, oldh);
-        caps.clear();
-        if (w <= 0 || h <= 0) return;
+        capIndex = 0;
+        if (w <= 0 || h <= 0) { caps.clear(); return; }
 
         gap = keyGap(w);
-        Ev.Key[][] layout = showFnRow ? Ev.LAYOUT
-                : java.util.Arrays.copyOfRange(Ev.LAYOUT, 1, Ev.LAYOUT.length);
+        Ev.Key[][] layout = showFnRow ? Ev.LAYOUT : WITHOUT_FN;
         int rows = layout.length;
         rowHeight = (h - gap * (rows + 1)) / rows;
         // Every row sums to ROW_UNITS, so one unit width serves all rows and the
@@ -157,6 +162,7 @@ class KeyboardView extends View {
 
         if (splitGap > 0) {
             layoutSplit(layout, w);
+            trimCaps();
             text.setTextSize(rowHeight * 0.30f * labelScale);
             nubRadius = 0f;   // G and H are apart; the trackpad between them takes its job
             return;
@@ -167,18 +173,35 @@ class KeyboardView extends View {
             float x = gap;
             for (Ev.Key key : row) {
                 float kw = key.width * unit + gap * (key.width - 1);
-                Cap cap = new Cap();
+                Cap cap = nextCap();
                 cap.key = key;
                 cap.rect.set(x, y, x + kw, y + rowHeight);
-                caps.add(cap);
                 x += kw + gap;
             }
             y += rowHeight + gap;
         }
 
         text.setTextSize(rowHeight * 0.30f * labelScale);
+        trimCaps();
         placeNub();
 
+    }
+
+    private Cap nextCap() {
+        if (capIndex == caps.size()) caps.add(new Cap());
+        return caps.get(capIndex++);
+    }
+
+    private void trimCaps() {
+        while (caps.size() > capIndex) caps.remove(caps.size() - 1);
+    }
+
+    private void cacheSplit() {
+        if (splitUnits != null && splitHasFn == showFnRow) return;
+        splitWidths.clear();
+        splitKeys.clear();
+        splitUnits = halfUnits(showFnRow ? Ev.LAYOUT : WITHOUT_FN, splitWidths, splitKeys);
+        splitHasFn = showFnRow;
     }
 
     /**
@@ -189,9 +212,10 @@ class KeyboardView extends View {
      * Backspace, the space halves), ties going to the outer edge.
      */
     private void layoutSplit(Ev.Key[][] layout, int w) {
-        List<List<float[]>> sides = new ArrayList<>();   // per side: per row widths
-        List<List<List<Ev.Key>>> keys = new ArrayList<>();
-        float[] maxUnits = halfUnits(layout, sides, keys);
+        cacheSplit();
+        List<List<float[]>> sides = splitWidths;
+        List<List<List<Ev.Key>>> keys = splitKeys;
+        float[] maxUnits = splitUnits;
         // One key unit for both halves, set by the fuller one, so keys are the
         // same size either side. Each half hugs its outer edge; the trackpad
         // takes everything between (see splitEdges), so it grows by whatever
@@ -218,10 +242,9 @@ class KeyboardView extends View {
                 List<Ev.Key> half = keys.get(side).get(r);
                 for (int i = 0; i < widths.length; i++) {
                     float kw = widths[i] * unit + gap * (widths[i] - 1);
-                    Cap cap = new Cap();
+                    Cap cap = nextCap();
                     cap.key = half.get(i);
                     cap.rect.set(x, y, x + kw, y + rowHeight);
-                    caps.add(cap);
                     x += kw + gap;
                 }
                 y += rowHeight + gap;
@@ -269,9 +292,8 @@ class KeyboardView extends View {
      * the emptier half gives up.
      */
     float[] splitEdges(int w) {
-        Ev.Key[][] layout = showFnRow ? Ev.LAYOUT
-                : java.util.Arrays.copyOfRange(Ev.LAYOUT, 1, Ev.LAYOUT.length);
-        float[] m = halfUnits(layout, null, null);
+        cacheSplit();
+        float[] m = splitUnits;
         float g = keyGap(w);
         float step = splitStep(w, g, m);
         return new float[]{g + m[0] * step, w - (g + m[1] * step)};
@@ -301,6 +323,7 @@ class KeyboardView extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         canvas.drawColor(Ui.BG);
+        if (!android.animation.ValueAnimator.areAnimatorsEnabled()) bounce.clear();
         long now = SystemClock.uptimeMillis();
         float lift = Ui.CAP_DEPTH_DP * density / 2f;
         for (Cap cap : caps) {
@@ -330,29 +353,36 @@ class KeyboardView extends View {
 
         // Pressed caps fill with the accent, so their legends switch to the ground.
         boolean pressed = held.contains(key.code);
-        int ink = pressed ? Ui.BG : Ui.TEXT;
+        int ink = pressed ? Ui.onAccent() : Ui.TEXT;
         float cx = cap.rect.centerX(), cy = cap.rect.centerY();
 
         // Long labels ("PrtSc", "Shift") need to shrink to fit their cap.
-        float size = rowHeight * labelScale * (key.label.length() > 3 ? 0.22f : 0.30f);
+        float span = Math.min(rowHeight, 72f * density);
+        float size = span * labelScale * (key.label.length() > 3 ? 0.22f : 0.30f);
         text.setTextSize(size);
+        float widest = Math.max(text.measureText(key.label),
+                key.shift == null ? 0 : text.measureText(key.shift));
+        float available = Math.max(1f, cap.rect.width() - 8f * density);
+        if (widest > available) text.setTextSize(size * available / widest);
 
         if (key.shift != null) {
             // Shifted legend above the base one, as printed on a real keycap.
-            text.setColor(pressed ? Ui.BG : Ui.TEXT_DIM);
-            canvas.drawText(key.shift, cx, cy - rowHeight * 0.06f, text);
+            text.setColor(pressed ? Ui.onAccent() : Ui.TEXT_DIM);
+            canvas.drawText(key.shift, cx, cy - span * 0.06f, text);
             text.setColor(ink);
-            canvas.drawText(key.label, cx, cy + rowHeight * 0.30f, text);
+            canvas.drawText(key.label, cx, cy + span * 0.30f, text);
             return;
         }
 
         if (key.fnLabel != null) {
             text.setColor(ink);
-            canvas.drawText(key.label, cx, cy - rowHeight * 0.04f, text);
+            canvas.drawText(key.label, cx, cy - span * 0.04f, text);
             // Fn-layer legend in the accent, lit when Fn is engaged.
-            text.setTextSize(rowHeight * 0.22f * labelScale);
-            text.setColor(pressed ? Ui.BG : fnActive ? Ui.ACCENT : Ui.TEXT_FAINT);
-            canvas.drawText(key.fnLabel, cx, cy + rowHeight * 0.30f, text);
+            text.setTextSize(Math.min(text.getTextSize(), span * 0.22f * labelScale));
+            float fnWidth = text.measureText(key.fnLabel);
+            if (fnWidth > available) text.setTextSize(text.getTextSize() * available / fnWidth);
+            text.setColor(pressed ? Ui.onAccent() : fnActive ? Ui.ACCENT : Ui.TEXT_FAINT);
+            canvas.drawText(key.fnLabel, cx, cy + span * 0.30f, text);
             return;
         }
 
@@ -399,7 +429,8 @@ class KeyboardView extends View {
         boolean chunky = Ev.isModifier(key.code) || key.code == Ev.LOCAL_FN
                 || key.code == Ev.CAPSLOCK || key.code == Ev.TAB
                 || key.code == Ev.BACKSPACE || key.code == Ev.ENTER;
-        return chunky ? Ui.SURFACE_HI : Ui.SURFACE;
+        if (key.code == Ev.ENTER) return Ui.mix(Ui.SURFACE, Ui.ACCENT, 0.16f);
+        return chunky ? Ui.SURFACE : Ui.SURFACE_HI;
     }
 
     private int edgeFor(Ev.Key key) {

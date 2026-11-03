@@ -11,9 +11,8 @@ import android.widget.TextView;
 /**
  * A full-screen sheet with a title bar and a scrolling body.
  *
- * Settings and the guide are the same object with different contents, so they
- * share one implementation — that is what stops the two screens from slowly
- * growing different header heights and different back buttons.
+ * Settings, the address editor and the shortcut editor all use this one
+ * implementation, so they never grow different header heights or back buttons.
  */
 class Panel extends FrameLayout {
 
@@ -23,32 +22,34 @@ class Panel extends FrameLayout {
 
     Panel(Context c, String titleText, Runnable onBack) {
         super(c);
-        setBackgroundColor(Ui.BG);
+        setBackground(Ui.backdrop());
         setClickable(true);   // never let touches through to the deck behind
 
         // -------- header --------------------------------------------------- //
         LinearLayout header = new LinearLayout(c);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(Ui.dp(c, 8), 0, Ui.dp(c, 20), 0);
-        header.setBackgroundColor(Ui.BG);
+        header.setPadding(Ui.dp(c, 16), 0, Ui.dp(c, 24), 0);
+        header.setBackground(Ui.floatingPanel(Ui.SURFACE, android.graphics.Color.TRANSPARENT, 0, c));
 
         TextView back = Ui.text(c, "‹", 34f, Ui.TEXT);
         back.setGravity(Gravity.CENTER);
-        back.setBackground(Ui.pressable(Ui.square(Ui.BG)));
+        back.setBackground(Ui.pressable(Ui.rounded(Ui.SURFACE, Ui.SEPARATOR, 14, c)));
         back.setContentDescription("Back");
         back.setClickable(true);
         Motion.press(back);
         back.setOnClickListener(v -> { if (!up()) onBack.run(); });
         // A 44dp target: the chevron glyph itself is far too small to hit.
-        header.addView(back, new LinearLayout.LayoutParams(Ui.dp(c, 44), Ui.dp(c, 44)));
+        back.setFocusable(true);
+        header.addView(back, new LinearLayout.LayoutParams(Ui.dp(c, 48), Ui.dp(c, 48)));
 
         title = Ui.text(c, titleText, Ui.T_TITLE, Ui.TEXT);
-        title.setTypeface(Ui.MONO_BOLD);
+        title.setTypeface(Ui.FONT_BOLD);
+        title.setAccessibilityHeading(true);
         LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
-        titleLp.leftMargin = Ui.dp(c, 6);
+        titleLp.leftMargin = Ui.dp(c, 16);
         header.addView(title, titleLp);
 
         View hairline = new View(c);
@@ -56,10 +57,11 @@ class Panel extends FrameLayout {
 
         // -------- body ----------------------------------------------------- //
         content = Ui.readableColumn(c);
-        content.setPadding(Ui.dp(c, 20), Ui.dp(c, 4), Ui.dp(c, 20), Ui.dp(c, 40));
+        content.setPadding(Ui.dp(c, 24), Ui.dp(c, 12), Ui.dp(c, 24), Ui.dp(c, 40));
 
         scroll = new ScrollView(c);
         scroll.setFillViewport(true);
+        scroll.setVerticalScrollBarEnabled(false);
         LinearLayout centre = new LinearLayout(c);
         centre.setOrientation(LinearLayout.VERTICAL);
         centre.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -71,7 +73,7 @@ class Panel extends FrameLayout {
         LinearLayout root = new LinearLayout(c);
         root.setOrientation(LinearLayout.VERTICAL);
         root.addView(header, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, Ui.dp(c, 56)));
+                LinearLayout.LayoutParams.MATCH_PARENT, Ui.dp(c, 80)));
         root.addView(hairline, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, Math.max(1, Ui.dp(c, 0.5f))));
         // weight 1 so the scroll area takes everything below the header.
@@ -90,6 +92,10 @@ class Panel extends FrameLayout {
     void showPage(String titleText) {
         title.setText(titleText);
         scroll.scrollTo(0, 0);
+    }
+
+    void enterPage(boolean returning) {
+        Motion.page(content, returning ? -1 : 1);
     }
 
     /** Where subclasses add their rows. */

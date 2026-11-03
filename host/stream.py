@@ -32,6 +32,7 @@ import threading
 import time
 
 import audio
+import sharing
 import security
 
 # --------------------------------------------------------------------------- #
@@ -291,7 +292,8 @@ def serve(args, encoder: str) -> None:
     kbd, ptr = open_input(not args.no_input)
     try:
         audio.remove_stale_sink()   # a crashed run must not leave the laptop silent
-    except (OSError, subprocess.SubprocessError):
+        sharing.cleanup_stale()
+    except (OSError, ValueError, subprocess.SubprocessError):
         pass
 
     tls = None
@@ -494,7 +496,8 @@ _PAYLOAD_LEN = {MSG_KEY: 3, MSG_BUTTON: 2, MSG_SCROLL: 4,
 
 
 def input_reader(conn: socket.socket, kbd, ptr, stop: threading.Event,
-                 io_lock: threading.Lock, on_audio=None, on_network=None) -> None:
+                 io_lock: threading.Lock, on_audio=None, on_network=None,
+                 on_sharing=None, on_exit=None) -> None:
     """Read input events off the same socket and inject them.
 
     TCP is full-duplex, so the reverse channel costs no extra connection. Input
@@ -524,11 +527,22 @@ def input_reader(conn: socket.socket, kbd, ptr, stop: threading.Event,
                     continue
 
             with io_lock:
-                data = conn.recv(1024)
+                data = conn.recv(16384)
             if not data:
                 break
             buf += data
             while buf:
+                if buf[0] == 8 and on_sharing is not None:
+                    if len(buf) < 5:
+                        break
+                    length = int.from_bytes(buf[1:5], "big")
+                    if not 1 <= length <= sharing.MAX_PACKET:
+                        raise ValueError("sharing length")
+                    if len(buf) < 5 + length:
+                        break
+                    on_sharing(buf[5:5 + length])
+                    buf = buf[5 + length:]
+                    continue
                 n = _PAYLOAD_LEN.get(buf[0])
                 if n is None:
                     # Desynced: every later parse would be garbage, so drop the
@@ -568,10 +582,16 @@ def input_reader(conn: socket.socket, kbd, ptr, stop: threading.Event,
         # A reader that quit on its own (desync, phone closed) must end the
         # stream too, or the video plays on with input silently dead.
         if not stop.is_set():
+            stop.set()
             try:
                 socket.socket.shutdown(conn, socket.SHUT_RDWR)   # raw fd, not TLS
             except (OSError, TypeError):
                 pass
+            if on_exit is not None:
+                try:
+                    on_exit()
+                except OSError:
+                    pass
 
 
 # --------------------------------------------------------------------------- #
@@ -677,6 +697,7 @@ def pump(conn: socket.socket, args, encoder: str, kbd, ptr) -> None:
         want_qp[0] = QP_MOBILE if mobile else QP_WIFI
 
     proc = subprocess.Popen(capture_cmd(args, encoder), stdout=subprocess.PIPE, bufsize=0)
+    current_proc = [proc]
     total, t0, last_report = 0, time.perf_counter(), time.perf_counter()
     frames = frames_at_report = 0
 
@@ -688,6 +709,7 @@ def pump(conn: socket.socket, args, encoder: str, kbd, ptr) -> None:
             conn.sendall(unit + AUD)
 
     route = audio.AudioRoute()
+    shared = sharing.Sharing(send)
 
     def audio_sender() -> None:
         # Audio has its own clock. Riding on video frames tied it to the screen:
@@ -702,12 +724,14 @@ def pump(conn: socket.socket, args, encoder: str, kbd, ptr) -> None:
                 return
 
     reader = threading.Thread(target=input_reader,
-                              args=(conn, kbd, ptr, stop, io_lock, route.set, on_network),
+                              args=(conn, kbd, ptr, stop, io_lock, route.set, on_network,
+                                    shared.offer, lambda: current_proc[0].kill()),
                               name="input", daemon=True)
     reader.start()
     threading.Thread(target=audio_sender, name="audio-send", daemon=True).start()
 
     try:
+        send(sharing.nal(sharing.HELLO, b"\x02"))
         theme = theme_nal()
         if theme:
             send(theme)
@@ -747,16 +771,22 @@ def pump(conn: socket.socket, args, encoder: str, kbd, ptr) -> None:
                     break
             else:
                 break
+            if stop.is_set():
+                break
             # The phone changed network class: restart the encoder at the new
             # quality. The next keyframe carries fresh SPS/PPS in-band.
             proc.kill()
             proc.wait()
+            if proc.stdout is not None:
+                proc.stdout.close()
             args.qp = want_qp[0]
             print(f"    quality: QP {args.qp} for "
                   f"{'mobile data' if args.qp == QP_MOBILE else 'Wi-Fi'}", flush=True)
             proc = subprocess.Popen(capture_cmd(args, encoder), stdout=subprocess.PIPE, bufsize=0)
+            current_proc[0] = proc
     except EOFError:
-        print("    capture ended", flush=True)
+        if not stop.is_set():
+            print("    capture ended", flush=True)
     except (BrokenPipeError, ConnectionResetError, ssl.SSLError, OSError) as exc:
         # A phone going away looks like SSLZeroReturnError (clean close_notify) or
         # SSLEOFError (radio dropped, socket just died). Both are routine. Letting
@@ -768,8 +798,11 @@ def pump(conn: socket.socket, args, encoder: str, kbd, ptr) -> None:
         stop.set()
         proc.kill()
         proc.wait()
+        if proc.stdout is not None:
+            proc.stdout.close()
         conn.close()
         reader.join(timeout=1)
+        shared.close()
         route.stop()
 
 

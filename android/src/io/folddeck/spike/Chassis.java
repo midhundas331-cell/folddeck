@@ -47,7 +47,7 @@ final class Chassis {
         private final RectF well = new RectF();
         private final float camR;
         private float camY;
-        private boolean chassis, separated = true;
+        private boolean chassis, separated = true, flipped;
 
         Lid(Context c) {
             super(c);
@@ -121,7 +121,7 @@ final class Chassis {
             float border = Ui.dp(getContext(), 2);
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(border);
-            paint.setColor(Ui.ACCENT);
+            paint.setColor(Ui.mix(Ui.BG, Ui.ACCENT, 0.45f));
             canvas.drawRect(well.left - border / 2, well.top - border / 2,
                     well.right + border / 2, well.bottom + border / 2, paint);
 
@@ -139,6 +139,12 @@ final class Chassis {
             invalidate();
         }
 
+        void setFlipped(boolean on) {
+            if (flipped == on) return;
+            flipped = on;
+            invalidate();
+        }
+
         /** Width of the line that stands in for the hinge when there is none. */
         static int separator(Context c) {
             return Ui.dp(c, 2);
@@ -149,11 +155,11 @@ final class Chassis {
             super.dispatchDraw(canvas);
             if (chassis || !separated) return;
             // Without the hinge nothing divides the desktop from the keyboard. An
-            // accent line does, drawn over the children so it lands exactly on the
-            // deck's bottom border and the two read as one.
+            // accent line does, drawn over the children so it lands on the shared edge.
+            int s = separator(getContext());
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(Ui.ACCENT);
-            canvas.drawRect(0, getHeight() - separator(getContext()), getWidth(), getHeight(), paint);
+            paint.setColor(Ui.mix(Ui.BG, Ui.ACCENT, 0.35f));
+            canvas.drawRect(0, flipped ? 0 : getHeight() - s, getWidth(), flipped ? s : getHeight(), paint);
         }
     }
 
@@ -201,7 +207,7 @@ final class Chassis {
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(Math.max(1, Ui.dp(getContext(), 1)));
             paint.setColor(Ui.LINE);
-            canvas.drawRect(well, paint);
+            canvas.drawRoundRect(well, Ui.dp(getContext(), 10), Ui.dp(getContext(), 10), paint);
         }
     }
 

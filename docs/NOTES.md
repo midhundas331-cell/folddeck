@@ -20,10 +20,9 @@ android/src/.../MainActivity.java  screen routing, posture, stream lifecycle
 android/src/.../Ui.java            Omarchy palette (live), JetBrains Mono, square shapes, wordmark
 android/assets/fonts/              JetBrains Mono subset (OFL), Omarchy's font
 android/src/.../Chassis.java       lid, hinge and base for the unfolded laptop
-android/src/.../HomeView.java      connect screen: address, state, one button
+android/src/.../HomeView.java      Home: block FOLDDECK + one Omarchy menu card (state, actions, laptop, settings)
 android/src/.../AddressView.java   address editor, warns on the phone's own IP
 android/src/.../SettingsView.java  settings, incl. both pairing recovery paths
-android/src/.../GuideView.java     how to use: gestures, keyboard, troubleshooting
 android/src/.../Panel.java         shared sheet: title bar + scrolling body
 android/src/.../Shortcuts.java     shortcut model: Hyprland-style chords -> evdev codes
 android/src/.../ShortcutBar.java   Omarchy shortcut chips in the video letterbox band
@@ -32,10 +31,220 @@ android/test/ShortcutsCheck.java   JVM check of the chord parser (run line in th
 android/build.sh                   aapt2 + javac + d8 + apksigner (no Gradle)
 ```
 
+## Cheese camera negotiation (host fix, 2026-10-29)
+
+- Reproduced Cheese's `no more input formats` error through a fresh PipeWire
+  source. v4l2loopback advertised an unreduced frame interval; at the same
+  10 fps, `10000/100000` seconds failed negotiation and `1/10` succeeded.
+- Set `VIDIOC_S_PARM` to the normalized 1/10-second interval before starting
+  FFmpeg. Use VIDEO_OUTPUT at this stage: with exclusive caps, VIDEO_CAPTURE
+  is unavailable until the writer starts. Publish the PipeWire node afterward.
+- Restarted the host and verified a newly created camera node advertised 10/1
+  fps. PipeWire/GStreamer delivered 25 RGB frames including live phone imagery
+  (23,040,000 bytes, checked in memory), and consumer demand returned to idle.
+  A subsequent direct V4L2 capture delivered five RGB frames as well.
+- The sharing integration script now exercises this fixed-cap PipeWire path;
+  direct FFmpeg capture had missed the Cheese compatibility bug. Existing
+  Cheese instances must reopen/reselect the device to refresh cached caps.
+
+## Audio continuity and measured polling (0.12.2, 2026-10-29)
+
+- Ponytail/Superpowers debugging pass: reproduced PCM loss in both Android's
+  outbound queue and the host sharing queue before changing them. Five queued
+  20 ms chunks previously left only the last chunk. Both queues now retain up
+  to 100 ms of contiguous, same-revision PCM; longer stalls discard the oldest
+  samples. Configuration changes still clear pending capture data.
+- PipeWire snapshots use `pw-dump -N -R`. A 20-sample local comparison measured
+  median query time of 28.58 ms before and 21.47 ms after, with output falling
+  from 189,606 to 123,098 bytes. Active-link detection remains the criterion for
+  microphone consumption; a running source alone is insufficient.
+- Reproduced a laptop-audio restart race with a delayed reader. A retired
+  reader now checks its process identity before appending to the current buffer.
+- Fixed the TLS timeout regression's measurement: time starts when the peer
+  receives ClientHello, excluding cold JVM key generation. The test now requires
+  SocketTimeoutException and still verifies failed-connection socket cleanup.
+- Final verification: 22 JVM checks, nine host test scripts, audio framing
+  self-check, signed APK build and signature verification all passed.
+- Installed versionCode 25 on SM-F966B. Recorded inner-display integration
+  passed streaming, seven resize controls, raised-trackpad geometry, keyboard
+  independence, held buttons, save/cancel/reset, clipboard both directions,
+  sensor idle/live/idle/Disable, device cleanup and default restoration.
+  2,059 editor frames: p50 3.67 ms, p95 6.42 ms. Different display from the
+  previous cover-screen run, so these are not a controlled UI speed comparison.
+- Recording and 14 screenshots: `/tmp/opencode/folddeck-0.12.2-evidence/`.
+  Previous recording preserved in `/tmp/opencode/folddeck-0.12.1-evidence/`.
+  Instrumentation APK removed and production relaunched after verification.
+
+## On-demand inputs and raised trackpad (0.12.1, 2026-10-29)
+
+- Phone camera/microphone enable choices persist. During a focused session they
+  become laptop defaults, with sensors idle until local applications consume
+  them. Settings has individual Disable buttons; the live badge disables both.
+- Sharing v2 separates READY from DEMAND. Configuration revisions tag state and
+  upstream media; demand renews every ~500 ms and expires after three seconds.
+  Camera usage comes from v4l2loopback capture events; mic usage from active
+  PipeWire links. Idle webcam frames are synthetic black images.
+- Previous defaults are restored on normal disconnect/disable unless the user
+  changed them. App-specific saved device choices may override system defaults.
+- The actual trackpad now belongs to the full workspace. A slot in InputDeckLayout
+  reserves its keyboard column, so it can extend upward past the keyboard band's
+  boundary while retaining ordinary Android hit testing. With the split keyboard,
+  the monitor and custom bar reflow to opposite sides of the raised pad.
+- Pad height is bounded by screen space, not keyboard height. Keyboard height
+  remains unchanged while the pad grows. Stacked/shelf layouts preserve keyboard
+  and bar heights while redistributing available vertical space.
+- Recorded cover-display test passed: raised pad above the lower band, between
+  monitor and custom bar, unchanged keyboard height, control bounds, holds,
+  save/cancel/reset, and idle → consumer → idle → disable input sharing.
+  1,889 editor frames: p50 2.95 ms, p95 7.74 ms. Recording:
+  `android/build/review/folddeck-raised-trackpad-test.mp4` (generated output).
+- All 22 JVM checks and eight host scripts passed for the sharing release;
+  affected layout/input checks and the complete device scenario passed again
+  after the raised-trackpad change. Security scope and limits are recorded in
+  `SECURITY-REVIEW-2026-10-29.md`; no autonomous Shannon scan ran.
+
+## Phone sharing and trackpad shape (0.11.0, 2026-10-29)
+
+- Layout Studio now has seven visible controls. Pad height is independent of its
+  width, bottom-aligned in side/split layouts; growing beyond the input band
+  reduces the monitor band. Portrait shelves and stacked layouts redistribute
+  their keyboard space. Wheel width defaults to 28dp, button height to 40dp.
+- Each button has a distinct HOLD/HELD section. `TrackpadState` combines physical
+  contact counts with independent latch bits, emitting only actual transitions.
+  Cancellation, geometry changes, navigation, focus loss and disconnect release
+  held states. Tap gestures cannot generate an extra click while held.
+- Host advertises sharing v1 through `FOLDDECK-SHARE-1` SEI. Only then does Android
+  send type 8: u32 big-endian payload length, subtype byte, data. Subtypes are
+  0 hello, 1 status, 2 config mask, 3 UTF-8 clipboard, 4 s16le 48 kHz mono PCM,
+  5 JPEG, 6 ready mask. Mask bits: clipboard=1, microphone=2, camera=4.
+- Envelopes are bounded at 256 KiB, clipboard at 64 KiB, PCM at 9,600 bytes.
+  Both endpoints keep at most one pending sample per sharing kind; reconfiguration
+  drops stale captures. Host device/clipboard operations run off the input reader.
+  Unknown or malformed upstream envelopes close the connection and release input.
+- Clipboard sync uses Android's foreground clipboard access and Wayland
+  wl-copy/wl-paste, with echo suppression and bounded reads. Camera2 sends front
+  camera JPEGs at up to 10 fps; FFmpeg publishes 640×480 to the specifically labelled
+  v4l2loopback device. AudioRecord feeds a PipeWire/Pulse virtual microphone.
+  Laptop-output routing excludes that microphone transport sink to avoid feedback.
+- Microphone/camera permissions are requested on use. Capture starts only after
+  host device setup, has a live Stop badge, and stops on background/disconnect.
+  Neither input automatically restarts after reconnect. No background service.
+- Live testing found the old drag-axis heuristic depended on the pad's top edge
+  matching the keyboard; independent height invalidated that assumption. It now
+  uses the actual layout mode. The camera also needed explicit small FFmpeg probe
+  limits to begin publishing immediately rather than buffering many JPEGs.
+- Verified on the unfolded SM-F966B: all 22 JVM checks and host checks pass;
+  recorded device tests cover all seven controls, both latch regions, cancellation,
+  split layout, real Sharing settings controls, and the Stop badge. Clipboard
+  transferred both ways, and the laptop read a 921,600-byte RGB camera frame and
+  95,966 bytes of microphone PCM. Media samples were tested in memory, not saved.
+  Final resize UI timings: 1,801 frames, p50 3.55 ms, p95 6.39 ms. Recording:
+  `android/build/review/folddeck-sharing-test.mp4` (about 49 seconds).
+
+## Live Layout Studio (0.10.0, 2026-10-29)
+
+- `ResizeOverlay` is a local input shield above the mounted deck. Monitor and
+  keyboard share a bounded split; trackpad size redistributes the adjacent
+  keyboard/shelf; bar size redistributes its monitor or portrait-shelf space.
+  Slider accessibility comes from the native SeekBar. Hidden controls are disabled.
+- Changes are coalesced with `postOnAnimation`, with no preference writes during
+  dragging. Done persists per-posture ratios. Cancel, Back, backgrounding and a
+  posture change discard the draft; Reset selects auto-fit. App settings sliders
+  clear the corresponding studio overrides so they cannot become ineffective.
+- The shortcut bar has a separate local Resize/App rail. Its System shortcut is
+  the existing `SUPER+SPACE` Omarchy menu. Editing/reordering custom chords still
+  uses the existing model. Crossing a compact-width threshold restyles existing
+  cells rather than rebuilding them on each resize frame.
+- Keyboard cap objects and split-row definitions are reused across layout passes.
+  Hardware screenshot review exposed height-only key-label sizing at extreme
+  proportions: legends now fit measured text to cap width and cap their height.
+  The device regression check reproduced `key label overflow: Esc` before the fix.
+- Page content briefly settles from a small hardware blur to sharp text. The
+  decoder's SurfaceView is never blurred or replaced. Idle pages do not animate.
+- `android/device-test` is a separate signed instrumentation APK for live-stream
+  UI checks, captured screenshots and frame-duration measurements. It temporarily
+  clears the capture flag only in the test process; the production APK retains
+  secure capture and normal app-lock behavior.
+- Recording review also caught the side bar reaching its maximum width across
+  most of its old slider range. The resize range now includes meaningful shrink
+  travel; the hardware check asserts visible dimensions change, not just values.
+- Verification on the SM-F966B / Android 17: 21 JVM checks passed; live-stream
+  checks exercised inner portrait and the folded cover, including save/cancel,
+  reset, local settings return, direct dragging and split-keyboard label fit.
+  The final cover run measured 1,208 editor frames: UI duration p50 2.98 ms,
+  p95 7.93 ms. These are UI frame durations, not network/decoder latency.
+  Test video is generated under `android/build/review/` and is not committed.
+
+## Premium workspace refresh (2026-10-27)
+
+- Home becomes a two-column dashboard at 700dp of available content width;
+  narrower windows stack the same content in a scrolling column. Route badges
+  and connection states still come from the existing connection controller.
+- Inter is bundled rather than relying on `sans-serif`: Samsung's selected
+  system font can override that family. Addresses and key legends retain
+  JetBrains Mono. Inter's license is in `android/assets/fonts/Inter-OFL.txt`.
+- Settings uses rounded control groups and separate explanatory notes. Lock,
+  address, shortcut editor, and guide surfaces share the same shape tokens.
+  The live deck gets quieter borders, softer keycaps, a tinted Enter key, and
+  an etched trackpad centre mark. Every colour derives from the live palette.
+- Navigation animates content inside an opaque page. Never fade the full sheet:
+  its live `SurfaceView` sibling would show through. Home entrances stagger;
+  settings subpages slide in the navigation direction. Switches interpolate
+  their thumb and track, and segmented controls settle after selection.
+  These animations honour `ValueAnimator.areAnimatorsEnabled()`.
+- The earlier appearance notes below describe historical versions.
+
+## Home, guide and transitions (0.9.3, 2026-10-27)
+
+- **Home is an Omarchy menu** (user: "remove the clutter, just say folddeck in
+  big", then "make home screen omarchy style"). Block-letter FOLDDECK
+  (`Ui.blockWordmark`, the 0.9.2 wordmark restored) over one square card with
+  a 2px foreground border: a dim heading that *is* the connection state
+  ("Ready…", "Connecting…", "Connected"), then mono icon rows — the main
+  action in the selected row with Omarchy's 4dp accent bar (Connect / Open
+  Desktop / Add Your Laptop), Disconnect (Cancel while connecting), Laptop
+  (addresses; the live one tagged wi-fi / tailscale) and Settings. Detail
+  text only appears for an error. The marketing hero, `WorkspaceArt` and the
+  two-column dashboard are gone. Settings and the lock screen keep the
+  refresh's look; the lock still uses the rounded `Ui.wordmark`.
+- **How to Use is removed** (user: the app is intuitive enough). What it
+  taught moved to where it is needed: the address editor says how to find
+  each address (`ip -4 addr`, `tailscale ip -4`); "Stopped for safety" names
+  Settings › Lock & Security › Reset Laptop Trust; the full-screen button is
+  a fullscreen / exit-fullscreen icon instead of ▣. Icons.ttf gained
+  U+F0293, U+F0294 (fullscreen) and U+F0415 (plus), same pyftsubset recipe.
+- **Screen changes crossfade without showing the desktop.** `showScreen`
+  fades whichever of the two screens is higher in the root stack — the
+  incoming one rising over, or the outgoing one lifting off — so the lower
+  one is opaque throughout; the deck is the bottom of the stack, so the live
+  desktop shows only when it is the destination or the origin. The unlock
+  fades the lock away. `applyTheme` takes the new lock's visibility from
+  `locked`, not the old view, which may still be fading out.
+- **Connect stays on Home until a frame is decoded** (`revealOnFrame`): the
+  dot pulses, then Home fades off the live desktop. Before, Connect jumped
+  to a black deck while the route was being found. The stream reports
+  `streaming` as soon as TLS opens, so the trigger is `decoded > 0`. Not if
+  the user has gone into Settings meanwhile (Home then says Open Desktop).
+  Unlocking with a stream wanted takes the same road.
+- **Full screen animates** (`setTheatre`): a `TransitionManager` ChangeBounds
+  + Fade over the root, 340 ms, so the desktop glides to the centre while
+  keyboard and shortcuts fade. Trap found on the recording: upright, the
+  shortcut deck is docked in the keyboard's base, and undocking it into the
+  video pane mid-transition drew it across the top of the screen for a few
+  frames. In full screen a docked deck now stays in the base and leaves with it.
+- **Verified by screen recording**, not screenshots: temp build with
+  FLAG_SECURE off plus an `onNewIntent` hook (`am start ... --es dbg
+  home|deck|settings|theatre|back|connect|disconnect|lock|unlock`, no taps,
+  so nothing reaches the laptop), `screenrecord --display-id <inner>`, then
+  ffmpeg `select=gt(scene,0.004)` to find the frames where something changes
+  and tile them. **A system biometric prompt blacks out the whole
+  recording** (secure layer) — the debug unlock must cancel it. Hook removed
+  and FLAG_SECURE restored before the release build.
+
 ## Screens
 
-`MainActivity` is the only Activity. Home, Settings, the guide and the address
-editor are sibling views in one `FrameLayout`, shown and hidden — not separate
+`MainActivity` is the only Activity. Home, Settings, the address editor and the
+shortcut editor are sibling views in one `FrameLayout`, shown and hidden — not separate
 Activities, because tearing the deck down would destroy its `SurfaceView`, drop
 the socket and stop the laptop capturing every time you opened Settings.
 
@@ -668,6 +877,7 @@ is actually installed.
 | 0.9 | 17 | Settings redesigned iOS-style: laptop card, grouped rounded lists, colour icon tiles, pill switches, round-knob sliders, segmented controls; Apple-style wording (short Title Case names, explanations in group footers) |
 | 0.9.1 | 18 | Settings back to Omarchy style, modelled on the Omarchy menu: 2px-bordered square card, "Settings…" heading, Nerd Font icon rows, cursor fill + accent label on press, 20% dividers, ToggleSwitch/PanelSlider/ButtonGroup controls; bigger (60dp rows, 17sp mono). Keeps 0.9's wording |
 | 0.9.2 | 19 | Home and How to Use moved onto the Omarchy menu card (connection state + both routes in one section, actions as icon rows); guide rewritten in Apple-style wording; no more desktop flash between sheets |
+| 0.9.3 | 20 | Premium refresh (Inter, rounded Settings) + Home as one Omarchy menu card under a block FOLDDECK; How to Use removed; crossfades between screens; Connect waits on Home for the first frame; animated full screen with fullscreen icons |
 | 0.8.3 | 13 | Audio errors cost the sound, not the stream. Ponytail pass: dead helpers removed |
 | 0.8.2 | 12 | Cover wheel full height, 40dp wide |
 | 0.8.1 | 11 | Tells the laptop when it is on mobile data; stream quality QP 20 on Wi-Fi, 26 on mobile (host first) |

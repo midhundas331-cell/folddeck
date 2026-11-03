@@ -49,7 +49,7 @@ class LockOverlay extends LinearLayout {
         this.listener = listener;
 
         setOrientation(VERTICAL);
-        setBackgroundColor(Ui.BG);
+        setBackground(Ui.backdrop());
         // Swallow every touch so nothing reaches the stream behind it.
         setClickable(true);
         setFocusable(true);
@@ -68,7 +68,7 @@ class LockOverlay extends LinearLayout {
 
         LayoutParams markLp = new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
         markLp.setMargins(Ui.dp(activity, 32), 0, Ui.dp(activity, 32), Ui.dp(activity, 28));
-        View mark = Ui.wordmark(activity, 300);
+        View mark = Ui.wordmark(activity, 23f);
         content.addView(mark, markLp);
 
         title.setTextColor(Ui.TEXT);
@@ -84,6 +84,7 @@ class LockOverlay extends LinearLayout {
         hint.setTypeface(Ui.FONT);
         hint.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, Ui.T_LABEL);
         hint.setGravity(Gravity.CENTER);
+        hint.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         // One line is always reserved, even empty, so a message never shoves the
         // keypad down under a finger mid-PIN; only the padding around it is trimmed.
         hint.setPadding(Ui.dp(activity, 32), 0, Ui.dp(activity, 32), Ui.dp(activity, 6));
@@ -110,11 +111,7 @@ class LockOverlay extends LinearLayout {
     }
 
     // ------------------------------------------------------------------ //
-    /**
-     * Omarchy's lock field: a box outlined 3px in the accent, the entry inside.
-     * Real squares rather than ■ and □ glyphs: the two characters have different
-     * optical weights in most fonts, so the row visibly jumped as digits landed.
-     */
+    /** Fixed-size PIN indicators keep the keypad still as digits are entered. */
     private void buildDots() {
         dots.setOrientation(HORIZONTAL);
         dots.setGravity(Gravity.CENTER);
@@ -155,8 +152,10 @@ class LockOverlay extends LinearLayout {
         // Backspace reads as an action, not a value, so it gets no keycap.
         boolean filled = !label.isEmpty() && !label.equals("⌫");
         b.setBackground(label.isEmpty() ? null
-                : Ui.pressable(filled ? Ui.outlined(Ui.SURFACE, Ui.LINE, 1, getContext())
-                        : Ui.square(Ui.BG)));
+                : Ui.pressable(Ui.rounded(filled ? Ui.SURFACE : Ui.BG,
+                        filled ? Ui.SEPARATOR : Ui.BG, 18, getContext())));
+        b.setFocusable(!label.isEmpty());
+        if (label.equals("⌫")) b.setContentDescription("Delete digit");
 
         LayoutParams lp = new LayoutParams(Ui.dp(getContext(), 80), Ui.dp(getContext(), 58));
         lp.setMargins(Ui.dp(getContext(), 7), Ui.dp(getContext(), 7),
@@ -246,13 +245,14 @@ class LockOverlay extends LinearLayout {
             title.setText("Enter PIN");
             biometricButton.setVisibility(biometricAvailable() ? VISIBLE : GONE);
         }
-        // The field goes red with the hint, as Omarchy's does on a wrong password.
+        // The field follows the error hint without shifting the keypad.
         boolean error = hint.getCurrentTextColor() == Ui.ERR;
-        dots.setBackground(Ui.outlined(Ui.BG, error ? Ui.ERR : Ui.ACCENT, 3, getContext()));
+        dots.setBackground(Ui.rounded(Ui.SURFACE, error ? Ui.ERR : Ui.SEPARATOR, 18, getContext()));
+        dots.setContentDescription(entered.length() + " of " + Lock.PIN_LENGTH + " PIN digits entered");
         for (int i = 0; i < dotViews.length; i++) {
             dotViews[i].setBackground(i < entered.length()
-                    ? Ui.square(Ui.ACCENT)
-                    : Ui.outlined(Ui.BG, Ui.LINE, 1, getContext()));
+                    ? Ui.rounded(Ui.ACCENT, Ui.ACCENT, 6, getContext())
+                    : Ui.rounded(Ui.SURFACE_HI, Ui.LINE, 6, getContext()));
         }
     }
 
@@ -278,7 +278,7 @@ class LockOverlay extends LinearLayout {
         hint.setTextColor(Ui.TEXT_DIM);
         hint.setText(lock.isConfigured() ? "" : "You will need this each time the app opens");
         refresh();
-        Motion.enter(this);
+        Motion.page(content, 1);
         if (biometricAvailable() && !lock.isLockedOut()) promptBiometric();
     }
 

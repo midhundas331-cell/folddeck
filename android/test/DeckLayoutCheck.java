@@ -87,6 +87,19 @@ public class DeckLayoutCheck {
         DeckLayout.Result scaled = DeckLayout.solve(
                 971, 875, 600, true, true, false, 16f / 9f, 1.15f);
         check(scaled.baseDp > inner.baseDp, "control scale increases input space");
+        for (float height : new float[]{320, 411, 750, 971}) {
+            for (boolean shelf : new boolean[]{false, true}) {
+                float previous = -1;
+                for (int step = -10; step <= 110; step++) {
+                    float lid = DeckLayout.resizedLid(height, step / 100f, true, shelf);
+                    check(lid >= 0 && lid <= height && lid >= previous,
+                            "drag is bounded and monotonic at every step");
+                    check(height - lid >= Math.min(height * 0.75f, shelf ? 360 : 220) - 0.01f,
+                            "resize preserves the keyboard and portrait shelf minimum");
+                    previous = lid;
+                }
+            }
+        }
         System.out.println("DeckLayoutCheck ok");
     }
 }

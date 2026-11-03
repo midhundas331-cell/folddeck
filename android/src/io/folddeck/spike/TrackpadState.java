@@ -8,6 +8,18 @@ final class TrackpadState {
     static final long TAP_MS = 220;
 
     private final int[] contacts = new int[3];
+    private final boolean[] latched = new boolean[3];
+
+    boolean held(int button) { return contacts[button] > 0 || latched[button]; }
+    boolean latched(int button) { return latched[button]; }
+
+    int toggle(int button) {
+        if (button < 1 || button > 2) return NONE;
+        boolean before = held(button);
+        latched[button] = !latched[button];
+        tapSpoiled = true;
+        return before == held(button) ? NONE : held(button) ? DOWN : UP;
+    }
     private float scrollRemainder;
     private int padContacts, tapFingers;
     private long tapDownAt;
@@ -16,20 +28,21 @@ final class TrackpadState {
     int press(int button) {
         if (button < 1 || button > 2) return NONE;
         contacts[button]++;
-        return contacts[button] == 1 ? DOWN : NONE;
+        return contacts[button] == 1 && !latched[button] ? DOWN : NONE;
     }
 
     int release(int button) {
         if (button < 1 || button > 2 || contacts[button] == 0) return NONE;
         contacts[button]--;
-        return contacts[button] == 0 ? UP : NONE;
+        return !held(button) ? UP : NONE;
     }
 
     int cancelMask() {
         int mask = 0;
         for (int button = 1; button <= 2; button++) {
-            if (contacts[button] > 0) mask |= 1 << button;
+            if (held(button)) mask |= 1 << button;
             contacts[button] = 0;
+            latched[button] = false;
         }
         resetScroll();
         padContacts = 0;

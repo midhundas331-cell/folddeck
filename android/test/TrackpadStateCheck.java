@@ -19,6 +19,16 @@ public class TrackpadStateCheck {
         int mask = state.cancelMask();
         check(mask == ((1 << 1) | (1 << 2)), "cancel reports both held buttons");
         check(state.cancelMask() == 0, "second cancel is quiet");
+        check(state.toggle(1) == TrackpadState.DOWN && state.latched(1), "hold section latches left");
+        check(state.press(1) == TrackpadState.NONE, "normal press does not duplicate latched down");
+        check(state.release(1) == TrackpadState.NONE && state.held(1), "normal release preserves latch");
+        check(state.toggle(2) == TrackpadState.DOWN, "right latch is independent");
+        check(state.toggle(1) == TrackpadState.UP && state.held(2), "second tap releases only left");
+        check(state.press(2) == TrackpadState.NONE, "contact while right latched");
+        check(state.toggle(2) == TrackpadState.NONE && state.held(2), "unlatch waits for physical contact");
+        check(state.release(2) == TrackpadState.UP, "last physical contact releases unlatched right");
+        state.toggle(1); state.toggle(2);
+        check(state.cancelMask() == 6 && !state.latched(1) && !state.latched(2), "cancel clears both latches");
 
         check(state.scroll(20f, 42f, true) == 0, "small scroll accumulates");
         check(state.scroll(25f, 42f, true) == 1, "accumulated natural scroll emits notch");

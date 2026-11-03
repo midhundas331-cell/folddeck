@@ -95,6 +95,16 @@ final class DeckLayout {
         return smallestWidthDp < 600;
     }
 
+    /** A live split keeps the monitor visible and the input band usable, even on the cover. */
+    static float resizedLid(float height, float requested, boolean keyboard) {
+        return resizedLid(height, requested, keyboard, false);
+    }
+
+    static float resizedLid(float height, float requested, boolean keyboard, boolean shelf) {
+        float minBase = Math.min(height * 0.75f, keyboard ? (shelf ? 360f : 220f) : 112f);
+        return clamp(height * requested, Math.min(96f, height * 0.25f), height - minBase);
+    }
+
     private static float clamp(float value, float min, float max) {
         return Math.max(min, Math.min(max, value));
     }

@@ -44,21 +44,19 @@ class AddressView extends Panel {
     private final Field awayField;
 
     AddressView(Context c, Endpoints current, Listener listener, Runnable onBack) {
-        super(c, "Laptop address", onBack);
+        super(c, "Laptop", onBack);
         LinearLayout body = content();
         ownAddresses = localAddresses();
 
-        body.addView(Ui.body(c, "The machine running the FoldDeck host, as host:port. "
-                + "Fill in both and the app connects over whichever one is live — "
-                + "home Wi-Fi when you are on it, the tailnet when you are not."),
+        body.addView(Ui.body(c, "Fill in one or both. FoldDeck uses whichever answers."),
                 Ui.fillW(c, 12));
 
-        homeField = new Field(c, "Home Wi-Fi", "Fast. Only works on your own network.",
+        homeField = new Field(c, "Home Wi-Fi", "On the laptop, ip -4 addr shows it.",
                 "192.168.1.10:5000",
                 EndpointText.format(current.homeHost, current.homePort));
         body.addView(homeField.view, Ui.fillW(c, 18));
 
-        awayField = new Field(c, "Tailnet", "Works anywhere, with Tailscale switched on.",
+        awayField = new Field(c, "Tailscale", "Works anywhere. On the laptop, tailscale ip -4 shows it.",
                 "100.100.10.20:5000",
                 EndpointText.format(current.awayHost, current.awayPort));
         body.addView(awayField.view, Ui.fillW(c, 14));
@@ -84,7 +82,7 @@ class AddressView extends Panel {
             sb.append(". Neither address above may be one of these.");
             TextView own = Ui.text(c, sb.toString(), Ui.T_LABEL, Ui.TEXT_DIM);
             own.setPadding(Ui.dp(c, 14), Ui.dp(c, 12), Ui.dp(c, 14), Ui.dp(c, 12));
-            own.setBackground(Ui.outlined(Ui.SURFACE, Ui.LINE, 1, c));
+            own.setBackground(Ui.rounded(Ui.SURFACE, Ui.SEPARATOR, 14, c));
             body.addView(own, Ui.fillW(c, 0));
         }
     }
@@ -115,7 +113,7 @@ class AddressView extends Panel {
             view = new LinearLayout(c);
             view.setOrientation(LinearLayout.VERTICAL);
             view.setPadding(Ui.dp(c, 16), Ui.dp(c, 14), Ui.dp(c, 16), Ui.dp(c, 16));
-            view.setBackground(Ui.outlined(Ui.SURFACE, Ui.LINE, 1, c));
+            view.setBackground(Ui.rounded(Ui.SURFACE, Ui.SEPARATOR, 16, c));
 
             TextView title = Ui.text(c, label, Ui.T_BODY, Ui.TEXT);
             title.setTypeface(Ui.FONT_BOLD);

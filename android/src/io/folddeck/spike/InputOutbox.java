@@ -20,6 +20,32 @@ final class InputOutbox {
 
     synchronized boolean offer(byte[] message) {
         if (message == null || message.length == 0) return true;
+        if (message[0] == 8) {
+            // One pending packet per kind; microphone retains up to 100 ms of PCM.
+            if (message.length < 6 || message.length > SharingProtocol.MAX_PACKET + 5) return false;
+            if (message[5] == SharingProtocol.MIC
+                    && (message.length < 12 || message.length > 9610 || message.length % 2 != 0)) return false;
+            java.util.Iterator<byte[]> it = queue.iterator();
+            while (it.hasNext()) {
+                byte[] old = it.next();
+                if (old[0] == 8 && (old[5] == message[5]
+                        || message[5] == SharingProtocol.CONFIG && (old[5] == SharingProtocol.MIC || old[5] == SharingProtocol.CAMERA))) {
+                    if (message[5] == SharingProtocol.MIC && old[5] == SharingProtocol.MIC
+                            && old[6] == message[6] && old[7] == message[7]
+                            && old[8] == message[8] && old[9] == message[9]) {
+                        int pcm = message.length - 10;
+                        int keep = Math.min(old.length - 10, 9600 - pcm);
+                        byte[] data = new byte[4 + keep + pcm];
+                        System.arraycopy(message, 6, data, 0, 4);
+                        System.arraycopy(old, old.length - keep, data, 4, keep);
+                        System.arraycopy(message, 10, data, 4 + keep, pcm);
+                        message = SharingProtocol.packet(SharingProtocol.MIC, data);
+                    }
+                    it.remove();
+                    reliableCount--;
+                }
+            }
+        }
         if (isPointer(message)) {
             byte[] tail = queue.peekLast();
             if (isPointer(tail)) queue.removeLast();

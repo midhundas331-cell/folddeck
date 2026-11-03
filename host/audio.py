@@ -40,15 +40,16 @@ def _sink_index(name: str) -> str | None:
 
 def _move_streams(src_index: str | None, dest: str) -> None:
     """Move every sink-input (on src_index, or on any sink if None) to dest."""
+    phone_input = _sink_index("folddeck_phone")
     for line in _pactl("list", "short", "sink-inputs").splitlines():
         cols = line.split("\t")
-        if len(cols) > 1 and (src_index is None or cols[1] == src_index):
+        if len(cols) > 1 and cols[1] != phone_input and (src_index is None or cols[1] == src_index):
             _pactl("move-sink-input", cols[0], dest)
 
 
 def remove_stale_sink() -> None:
     for line in _pactl("list", "short", "modules").splitlines():
-        if "module-null-sink" in line and f"sink_name={SINK}" in line:
+        if "module-null-sink" in line and f"sink_name={SINK}" in line.split():
             _pactl("unload-module", line.split("\t")[0])
 
 
@@ -108,6 +109,8 @@ class AudioRoute:
             if not chunk:
                 return
             with self._lock:
+                if self._proc is not proc:
+                    return  # A stopped reader cannot feed a replacement audio session.
                 self._buf += chunk
                 if len(self._buf) > MAX_BUFFERED:
                     # Keep whole frames so the channels never swap.

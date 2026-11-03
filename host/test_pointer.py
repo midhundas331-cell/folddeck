@@ -102,13 +102,19 @@ def main() -> int:
     # A desync must end the whole stream, not just the reader: otherwise the
     # video plays on and the phone's input is silently dead.
     a, b = socket.socketpair()
+    stop_ev = threading.Event()
+    exited = []
     t = threading.Thread(target=input_reader,
-                         args=(a, None, None, threading.Event(), threading.Lock()))
+                         args=(a, None, None, stop_ev, threading.Lock()),
+                         kwargs={"on_exit": lambda: exited.append(True)})
     t.start()
     b.sendall(bytes([99]))
     t.join(2)
     b.settimeout(2)
     assert b.recv(1) == b"", "desync left the connection open"
+    assert stop_ev.is_set() and exited == [True], "desync did not signal stop/on_exit"
+    a.close()
+    b.close()
     print("test_pointer ok")
     return 0
 

@@ -76,6 +76,24 @@ final class Prefs {
     static final String COVER_TOGGLE_Y = "cover_toggle_y";
     static final String THEATRE_TOGGLE_X = "theatre_toggle_x";
     static final String THEATRE_TOGGLE_Y = "theatre_toggle_y";
+    static final String RESIZE_MONITOR = "resize_monitor_", RESIZE_PAD = "resize_pad_",
+            RESIZE_BAR = "resize_bar_";
+    static final float BAR_SIZE_MIN = 0.25f, BAR_SIZE_MAX = 1.75f;
+    static final String RESIZE_HEIGHT = "resize_height_", RESIZE_WHEEL = "resize_wheel_",
+            RESIZE_BUTTONS = "resize_buttons_";
+    static final String RESIZE_DECK_FLIP = "resize_deck_flip_",
+            RESIZE_PAD_LEFT = "resize_pad_left_",
+            RESIZE_BAR_FLIP = "resize_bar_flip_",
+            RESIZE_PAD_TOP = "resize_pad_top_";
+
+    static float resize(SharedPreferences p, String key, int posture, float fallback) {
+        float value = p.getFloat(key + posture, fallback);
+        return Float.isFinite(value) ? value : fallback;
+    }
+
+    static boolean resizeFlag(SharedPreferences p, String key, int posture, boolean fallback) {
+        return p.contains(key + posture) ? p.getBoolean(key + posture, fallback) : fallback;
+    }
 
     /** The laptop's Omarchy palette as last sent down the stream, "key=#rrggbb" lines. */
     static final String THEME = "theme";
