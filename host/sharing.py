@@ -188,8 +188,20 @@ class Sharing:
         self.last_camera = 0
         self.devices = {}
         self.last_clip = None
+        self.burst_until = 0.0
+        try:
+            self.watcher = demand.Watcher(self.wake)
+        except OSError:
+            self.watcher = None  # the 0.5 s poll still works
         self.thread = threading.Thread(target=self.run, name="phone-sharing", daemon=True)
         self.thread.start()
+
+    def wake(self):
+        """A capture stream appeared/changed/went: poll demand now and briefly at 50 ms,
+        since the link can turn active a few ms after the event."""
+        with self.lock:
+            self.burst_until = time.monotonic() + 0.3
+            self.lock.notify()
 
     def offer(self, payload):
         kind, data = validate(payload)
@@ -281,7 +293,13 @@ class Sharing:
                             self.status(str(exc))
                             self.state(READY, self.mask)
                 now = time.monotonic()
-                if self.revision and now >= next_demand:
+                camera = self.devices.get(CAMERA)
+                try:
+                    if camera and camera.usage.poll() != bool(self.demand & 4):
+                        next_demand = 0  # a cheap non-blocking ioctl, so read it every pass
+                except OSError:
+                    next_demand = 0  # poll_demand fails closed
+                if self.revision and (now >= next_demand or now < self.burst_until):
                     self.poll_demand()
                     next_demand = time.monotonic() + .5
                 if CAMERA in self.devices and now >= next_black and (not self.demand & 4 or now - self.last_camera > 1):
@@ -305,6 +323,8 @@ class Sharing:
         except (OSError, subprocess.SubprocessError) as exc:
             print(f"    sharing: worker stopped: {exc!r}", flush=True)  # pump owns transport teardown
         finally:
+            if self.watcher:
+                self.watcher.close()
             for device in self.devices.values():
                 device.close()
             self.devices.clear()

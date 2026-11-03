@@ -6,6 +6,7 @@ import json
 import os
 import struct
 import subprocess
+import threading
 import time
 
 
@@ -97,6 +98,31 @@ def microphone_used(objects):
     return any(o.get("type") == "PipeWire:Interface:Link"
                and o.get("info", {}).get("output-node-id") in nodes
                and o.get("info", {}).get("state") == "active" for o in objects)
+
+
+def is_capture_event(line):
+    # Only recording streams. pw-dump (our own poll) makes client events, so those
+    # would retrigger themselves.
+    return " on source-output #" in line
+
+
+class Watcher:
+    """Calls back on every capture-stream event, so demand is seen in ms, not at the next poll."""
+
+    def __init__(self, callback):
+        self.proc = subprocess.Popen(["pactl", "subscribe"], stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, text=True)
+        threading.Thread(target=self.run, args=(callback,), name="pactl-subscribe", daemon=True).start()
+
+    def run(self, callback):
+        for line in self.proc.stdout:
+            if is_capture_event(line):
+                callback()
+
+    def close(self):
+        self.proc.kill()
+        self.proc.wait()
+        self.proc.stdout.close()
 
 
 def camera_rate(path):

@@ -1,6 +1,7 @@
 """Consumer graph, default ownership, stale configuration and fail-closed demand."""
 from unittest.mock import patch
 import threading
+import time
 import demand
 import sharing
 
@@ -88,6 +89,43 @@ def main():
             pass
         else:
             raise AssertionError("invalid permission mask accepted")
+    # Real `pactl subscribe` lines from this laptop: only capture streams matter, and
+    # pw-dump itself creates client events, which must not retrigger a poll.
+    assert demand.is_capture_event("Event 'new' on source-output #102736")
+    assert demand.is_capture_event("Event 'remove' on source-output #7")
+    assert not demand.is_capture_event("Event 'new' on client #102735")
+    assert not demand.is_capture_event("Event 'change' on sink-input #5")
+    # A consumer event must reach the phone well inside the 0.5 s fallback poll.
+    class Mic:
+        def close(self):
+            pass
+    used = [False]
+    events = []
+    with patch.object(demand, "snapshot", return_value=[]), \
+            patch.object(demand, "microphone_used", side_effect=lambda objects: used[0]):
+        worker = sharing.Sharing(lambda data: None)
+        worker.state = lambda kind, mask: events.append((kind, mask, time.monotonic()))
+        try:
+            with worker.lock:
+                worker.revision, worker.mask = 1, 2
+                worker.devices[sharing.MIC] = Mic()
+                worker.lock.notify()
+            for _ in range(100):
+                if events:
+                    break
+                time.sleep(0.01)
+            assert events, "worker never polled demand"
+            used[0] = True
+            woke = time.monotonic()
+            worker.wake()
+            for _ in range(50):
+                if any(mask == 2 for _, mask, _ in events):
+                    break
+                time.sleep(0.01)
+            hit = [at for _, mask, at in events if mask == 2]
+            assert hit and hit[0] - woke < 0.15, f"consumer event not acted on promptly: {events}"
+        finally:
+            worker.close()
     print("demand ownership, stale config and fail-closed checks ok")
 
 
