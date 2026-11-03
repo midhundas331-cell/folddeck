@@ -502,6 +502,7 @@ _reject_token = ""
 # Type 2 was the pre-0.2 permille pointer; retired, never reuse the number.
 MSG_KEY, MSG_BUTTON, MSG_SCROLL, MSG_PTR_ABS16, MSG_AUDIO = 1, 3, 4, 5, 6
 MSG_NETWORK = 7
+MSG_VIDEO = 9   # 8 is the sharing envelope
 
 # type -> payload length. Every message is fixed-size for its type, so no length
 # field is needed; an unknown type means the stream has desynced.
@@ -510,13 +511,47 @@ MSG_NETWORK = 7
 # never sends it, so it never receives audio NALs its decoder would choke on.
 # MSG_NETWORK (u8, 1 = mobile data) picks the stream quality; an older APK never
 # sends it and keeps the Wi-Fi quality.
+# MSG_VIDEO (u8 on/off): the phone is hidden or locked but keeps the connection for
+# its microphone/camera, so stop capturing the screen until it is visible again.
 _PAYLOAD_LEN = {MSG_KEY: 3, MSG_BUTTON: 2, MSG_SCROLL: 4,
-                MSG_PTR_ABS16: 4, MSG_AUDIO: 1, MSG_NETWORK: 1}
+                MSG_PTR_ABS16: 4, MSG_AUDIO: 1, MSG_NETWORK: 1, MSG_VIDEO: 1}
+
+
+class VideoGate:
+    """MSG_VIDEO state shared by the input thread and pump()."""
+
+    def __init__(self) -> None:
+        self.on = threading.Event()
+        self.on.set()
+        self._killed = False
+        self._lock = threading.Lock()
+
+    def pause(self) -> None:
+        # Mark before the caller kills the encoder, so its EOF reads as a pause.
+        with self._lock:
+            self.on.clear()
+            self._killed = True
+
+    def resume(self) -> None:
+        self.on.set()
+
+    def consume_pause(self) -> bool:
+        """True once for an encoder EOF caused by pause(), not by the capture dying."""
+        with self._lock:
+            killed, self._killed = self._killed, False
+            return killed
+
+    def wait(self, stop: threading.Event) -> bool:
+        """Block while paused; False if the connection ended meanwhile."""
+        while not self.on.wait(0.2):
+            if stop.is_set():
+                return False
+        return not stop.is_set()
 
 
 def input_reader(conn: socket.socket, kbd, ptr, stop: threading.Event,
                  io_lock: threading.Lock, on_audio=None, on_network=None,
-                 on_sharing=None, on_exit=None) -> None:
+                 on_sharing=None, on_exit=None, on_video=None) -> None:
     """Read input events off the same socket and inject them.
 
     TCP is full-duplex, so the reverse channel costs no extra connection. Input
@@ -589,6 +624,8 @@ def input_reader(conn: socket.socket, kbd, ptr, stop: threading.Event,
                     on_audio(payload[0] == 1)
                 elif typ == MSG_NETWORK and on_network is not None:
                     on_network(payload[0] == 1)
+                elif typ == MSG_VIDEO and on_video is not None:
+                    on_video(payload[0] == 1)
     except (OSError, ConnectionResetError, ssl.SSLError, ValueError):
         pass
     finally:
@@ -715,6 +752,15 @@ def pump(conn: socket.socket, args, encoder: str, kbd, ptr) -> None:
     def on_network(mobile: bool) -> None:
         want_qp[0] = QP_MOBILE if mobile else QP_WIFI
 
+    video = VideoGate()
+
+    def on_video(on: bool) -> None:
+        if on:
+            video.resume()
+        elif video.on.is_set():
+            video.pause()
+            current_proc[0].kill()
+
     proc = subprocess.Popen(capture_cmd(args, encoder), stdout=subprocess.PIPE, bufsize=0)
     current_proc = [proc]
     total, t0, last_report = 0, time.perf_counter(), time.perf_counter()
@@ -747,7 +793,7 @@ def pump(conn: socket.socket, args, encoder: str, kbd, ptr) -> None:
     reader = threading.Thread(target=input_reader,
                               args=(conn, kbd, ptr, stop, io_lock, route.set, on_network,
                                     shared.offer, lambda: current_proc[0].kill()),
-                              name="input", daemon=True)
+                              kwargs={"on_video": on_video}, name="input", daemon=True)
     reader.start()
     threading.Thread(target=audio_sender, name="audio-send", daemon=True).start()
 
@@ -760,49 +806,59 @@ def pump(conn: socket.socket, args, encoder: str, kbd, ptr) -> None:
         waited = sending = 0.0
         mark = time.perf_counter()
         while True:
-            for frame in flv_frames(proc.stdout):
-                now = time.perf_counter()
-                waited += now - mark
-                if now - last_theme_check >= 1.0:
-                    last_theme_check = now
-                    latest = theme_nal()
-                    if latest and latest != theme:
-                        theme = latest
-                        send(theme)
-                        print("    theme changed, sending palette", flush=True)
+            try:
+                for frame in flv_frames(proc.stdout):
+                    now = time.perf_counter()
+                    waited += now - mark
+                    if now - last_theme_check >= 1.0:
+                        last_theme_check = now
+                        latest = theme_nal()
+                        if latest and latest != theme:
+                            theme = latest
+                            send(theme)
+                            print("    theme changed, sending palette", flush=True)
 
-                send(frame)
-                mark = time.perf_counter()
-                sending += mark - now
-                total += len(frame)
-                frames += 1
+                    send(frame)
+                    mark = time.perf_counter()
+                    sending += mark - now
+                    total += len(frame)
+                    frames += 1
 
-                if now - last_report >= 2.0:
-                    mbps = total * 8 / (now - t0) / 1e6
-                    fps = (frames - frames_at_report) / (now - last_report)
-                    # Where the time went: waiting on the capture vs blocked sending.
-                    # Blocked sending means the network or the phone is the limit.
-                    print(f"    {mbps:5.1f} Mbps   {total / 1e6:6.1f} MB sent   {fps:5.1f} fps"
-                          f"   capture {waited * 1000 / max(1, frames - frames_at_report):5.1f}"
-                          f" ms/f  send {sending * 1000 / max(1, frames - frames_at_report):5.1f} ms/f",
-                          flush=True)
-                    last_report, frames_at_report = now, frames
-                    waited = sending = 0.0
-                if want_qp[0] != args.qp:
+                    if now - last_report >= 2.0:
+                        mbps = total * 8 / (now - t0) / 1e6
+                        fps = (frames - frames_at_report) / (now - last_report)
+                        # Where the time went: waiting on the capture vs blocked sending.
+                        # Blocked sending means the network or the phone is the limit.
+                        print(f"    {mbps:5.1f} Mbps   {total / 1e6:6.1f} MB sent   {fps:5.1f} fps"
+                              f"   capture {waited * 1000 / max(1, frames - frames_at_report):5.1f}"
+                              f" ms/f  send {sending * 1000 / max(1, frames - frames_at_report):5.1f} ms/f",
+                              flush=True)
+                        last_report, frames_at_report = now, frames
+                        waited = sending = 0.0
+                    if want_qp[0] != args.qp or not video.on.is_set():
+                        break
+                else:
                     break
-            else:
-                break
+            except EOFError:
+                if not video.consume_pause():
+                    raise
             if stop.is_set():
                 break
-            # The phone changed network class: restart the encoder at the new
-            # quality. The next keyframe carries fresh SPS/PPS in-band.
+            # The phone changed network class, or hid itself: stop this encoder.
+            # A fresh one starts on an IDR with SPS/PPS in-band.
             proc.kill()
             proc.wait()
             if proc.stdout is not None:
                 proc.stdout.close()
-            args.qp = want_qp[0]
-            print(f"    quality: QP {args.qp} for "
-                  f"{'mobile data' if args.qp == QP_MOBILE else 'Wi-Fi'}", flush=True)
+            if not video.on.is_set():
+                print("    video paused: phone hidden, sharing only", flush=True)
+                if not video.wait(stop):
+                    break
+                print("    video resumed", flush=True)
+            if want_qp[0] != args.qp:
+                args.qp = want_qp[0]
+                print(f"    quality: QP {args.qp} for "
+                      f"{'mobile data' if args.qp == QP_MOBILE else 'Wi-Fi'}", flush=True)
             proc = subprocess.Popen(capture_cmd(args, encoder), stdout=subprocess.PIPE, bufsize=0)
             current_proc[0] = proc
     except EOFError:
