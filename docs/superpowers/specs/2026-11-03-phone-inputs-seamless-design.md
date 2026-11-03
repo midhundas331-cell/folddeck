@@ -32,6 +32,13 @@ while the app has a visible activity; from the background it throws
 (API 33+) only controls whether the notification is shown in the drawer; the service
 runs without it.
 
+**Verification limit:** the only way to drive the PIN-locked app here is a
+same-signature instrumentation, and Android treats an instrumented process as
+foreground (`fg F/S/FGS (instrumentation)`, all capabilities). A build with the
+service disabled still recorded in background under instrumentation, so on-device
+tests prove the service is started correctly (types 0xC0, notification posted, no
+refusal logged), not that it is what keeps a real background session recording.
+
 **Service:** `SharingService`, `foregroundServiceType="microphone|camera"`. Started
 (`startForegroundService`) by `PhoneSharing` when a stream is attached or the user
 changes a switch / grants a permission, i.e. only from foreground UI paths, with the
@@ -87,21 +94,25 @@ first (0–500 ms, mean ~250 ms) on top.
 
 Changes:
 1. **Event-driven demand (host).** A `pactl subscribe` watcher wakes the sharing worker
-   on any `source-output` event; the worker then polls demand immediately and every
-   50 ms for 300 ms (the link can turn active a few ms after the event). The 0.5 s
+   on any `source-output` event; the worker then polls demand back to back (10 ms
+   waits) for 300 ms, since the link turns active tens of ms after the event. The 0.5 s
    poll stays as the fallback. Camera usage (a non-blocking v4l2 event ioctl) is read
    every worker pass (≤ 50 ms) instead of every 0.5 s. `client` events are ignored:
    `pw-dump` itself generates them, which would self-trigger.
 2. **Mic start off the main thread (phone).** `AudioRecord` construction +
    `startRecording()` move onto the capture thread; DEMAND handling no longer blocks
    the UI thread. Timings are logged (`FoldDeck/Share`).
-3. **Pre-warming AudioRecord**: decided by measurement (see plan Task 6): only kept if
-   construction is a significant part of start-up. Construction does not start the
-   RECORD_AUDIO app-op (the privacy indicator follows `startRecording()`); verified on
-   the device with `cmd appops` / `dumpsys audio` before relying on it.
+3. **Pre-warming AudioRecord: not done.** Measured on the Fold: construction 6–12 ms,
+   `startRecording()` 4–7 ms, first PCM ~30 ms later (HAL buffer). Pre-creating could
+   save ≤ 12 ms while holding a recorder (and possibly a HAL input) open when idle.
 4. **Host zero-padding: not needed.** The consumer reads the monitor of a null sink fed
    by a running `pacat`; it already sees continuous (zero) samples before phone audio,
    so nothing to pad. `pacat --latency-msec=40` stays (lower risks underrun crackle).
+
+Measured after (0.13.0): cold open→first phone audio median 96 ms (90–109, 4
+sessions; was 216). Mid-session demand detection on a scratch `folddeck_mic` node:
+open→DEMAND median 50 ms (max 55) vs 279 ms (max 534) with the 0.5 s poll, so a
+mid-session cold start is now ~50 ms + ~100 ms instead of up to ~0.5 s + ~0.2 s.
 
 Known limit: `hermes chat` keeps its PortAudio input stream open for the recorder's
 lifetime and the stream follows the default source, so once FoldDeck connects the
@@ -113,10 +124,12 @@ stream between recordings; out of scope (not this repo).
 
 Host sets `folddeck_mic` to 250 % because VOICE_RECOGNITION PCM arrived at ~5 % full
 scale. Digital gain is the same wherever it is applied, so only the `AudioSource`
-choice (HAL gain/processing) can improve SNR. Decided by measuring VOICE_RECOGNITION
-vs MIC vs UNPROCESSED against the same stimulus (plan Task 6); keep 250 % only if the
-chosen source still needs it, and avoid clipping (baseline peaks already hit 0 dBFS on
-loud ambient sound at 250 %).
+choice (HAL gain/processing) can improve SNR. **Not resolved:** a controlled comparison
+needs a stimulus; the laptop speakers were muted (left untouched) and the phone-speaker
+route did not play the tone, and ambient-only readings showed no consistent difference
+(VOICE_RECOGNITION / MIC / UNPROCESSED all −51…−61 dBFS RMS at 100 %). Kept
+VOICE_RECOGNITION + 250 %. Note loud ambient sound already reaches 0 dBFS at 250 %, so
+loud speech close to the phone may clip; needs a speech test by the user.
 
 ## Host stop
 

@@ -39,12 +39,20 @@ repaints within a second, without dropping the stream.
    gestures to the laptop.
 - **Phone sharing** — App → Phone Sharing syncs text clipboard content both ways
    while Folddeck is focused (up to 64 KiB). Allow Android microphone/camera
-   permissions once; enabled phone inputs become the laptop's defaults during
-   the session but capture only while a laptop app consumes them. Each has a
-   persistent **Disable** button; the live badge disables both. Backgrounding or
-   disconnecting stops capture and restores previous defaults. Apps with saved
-   device choices may need **Folddeck-Phone-Microphone** or **Folddeck Phone**
-   selected once. Both host and phone need sharing protocol v2 (0.12.0).
+   permissions once; from then on, whenever the Fold is connected, the enabled
+   phone microphone and camera are the laptop's default source and camera
+   (`folddeck_mic`, `folddeck_camera`) with no action on the phone, and the
+   previous defaults come back on disconnect (including when the host is
+   stopped). They keep working with Folddeck in the background or locked: the
+   stream drops its video (the laptop stops capturing its screen) but keeps the
+   connection, under a "Phone sharing" notification that Android requires. The
+   phone records only while a laptop app actually reads the input; Android's
+   own mic/camera indicators show when. There is no in-app live badge; the
+   Settings switches are the only way to turn an input off. An app that keeps
+   its input stream open (Hermes voice mode does) keeps the phone mic in use
+   for as long as it runs. Apps with saved device choices may need
+   **Folddeck-Phone-Microphone** or **Folddeck Phone** selected once. Host and
+   phone need 0.13.0 (sharing protocol v2 plus the video-pause message).
 - **Local and laptop controls** — the tinted Resize/App rail controls Folddeck;
   System opens the laptop's Omarchy menu. Laptop shortcuts show their chords.
 - **Bluetooth mouse** — pair one with the phone and it drives the laptop's own
@@ -99,8 +107,8 @@ sudo bash host/install-camera.sh
 ```
 
 This creates `/dev/video10`, labelled **Folddeck Phone**, and loads it after reboot.
-Restart the host when updating it. Sharing is negotiated with the host; an older
-host can still stream video but cannot provide the new phone inputs.
+Restart the host when updating it, before installing the APK: a 0.13 phone sends
+a video-pause message that an older host treats as a desync and disconnects on.
 
 **Phone:** Android 12+ (API 31). Tuned for the Fold 7 but runs on any phone.
 
