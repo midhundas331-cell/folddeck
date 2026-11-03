@@ -4,8 +4,10 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.pm.ServiceInfo;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.ImageFormat;
@@ -23,7 +25,12 @@ import android.util.Size;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 
-/** Foreground-only phone inputs. All UI state is owned by the main thread. */
+/**
+ * Phone clipboard, microphone and camera for the laptop. Mic/camera availability is
+ * switch + permission only, so they keep working while FoldDeck is hidden or locked
+ * (SharingService keeps that legal); clipboard sync needs window focus. All state is
+ * owned by the main thread.
+ */
 final class PhoneSharing {
     static final int PERMISSIONS = 81;
     private final Activity activity;
@@ -34,8 +41,10 @@ final class PhoneSharing {
     private final HandlerThread cameraThread = new HandlerThread("phone-camera");
     private final Handler cameraHandler;
     private H264Stream stream;
-    private boolean supported, foreground, focused, writingClipboard;
-    private int wanted, ready, pendingPermission;
+    private boolean supported, focused, writingClipboard;
+    private int wanted, ready, pendingPermission, serviceRunning;
+    /** Laptop clipboard text that arrived without focus; applied on focus. */
+    private String deferredText;
     private final CaptureGate gate = new CaptureGate();
     private int live;
     private final Runnable leaseCheck = new Runnable() {
@@ -70,49 +79,85 @@ final class PhoneSharing {
     int active() { return live | (ready & 1); }
     int available() { return ready; }
 
-    void stopInputs() { wanted &= 1; save(); configure(); }
+    static int allowedMask(int wanted, boolean mic, boolean camera) {
+        return wanted & 7 & ~(mic ? 0 : 2) & ~(camera ? 0 : 4);
+    }
+
+    static int serviceTypes(int mask) {
+        return ((mask & 2) != 0 ? ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE : 0)
+                | ((mask & 4) != 0 ? ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA : 0);
+    }
+
+    private int allowed() { return allowedMask(wanted, permitted(2), permitted(4)); }
+
+    /** Worth keeping the connection while hidden: a phone mic/camera is offered. */
+    boolean keepsConnection() { return stream != null && (allowed() & 6) != 0; }
+
+    /**
+     * Start, retype or stop SharingService. Starting needs a visible activity (mic and
+     * camera are while-in-use permissions), so only foreground paths pass a non-zero
+     * type set; stopping is allowed anywhere.
+     */
+    private void updateService() {
+        int types = stream == null ? 0 : serviceTypes(allowed());
+        if (types == serviceRunning) return;
+        Intent intent = new Intent(activity, SharingService.class);
+        try {
+            if (types == 0) activity.stopService(intent);
+            else activity.startForegroundService(intent.putExtra(SharingService.TYPES, types));
+            serviceRunning = types;
+        } catch (RuntimeException e) {
+            android.util.Log.w("FoldDeck/Share", "sharing service", e);
+        }
+    }
 
     private void save() {
         prefs.edit().putBoolean("share_clipboard", enabled(1))
                 .putBoolean("share_microphone", enabled(2)).putBoolean("share_camera", enabled(4)).apply();
     }
 
+    /** UI thread, activity visible: the one place a new stream starts the service. */
     void attach(H264Stream next) {
-        disconnect();
+        reset();
         stream = next;
         next.setSharingListener(payload -> {
             long received = android.os.SystemClock.elapsedRealtime();
             main.post(() -> { if (stream == next) receive(payload, received); });
         });
+        updateService();
     }
 
     void disconnect() {
+        reset();
+        updateService();
+    }
+
+    private void reset() {
         supported = false;
         stream = null;
         gate.configure(0);
         live = 0;
         ready = 0;
         lastText = null;
+        deferredText = null;
         stopMic();
         stopCamera();
         status = "Connect to your laptop to share phone inputs";
         changed.run();
     }
 
-    void foreground(boolean on) {
-        foreground = on;
-        if (!on) {
-            ready = 0;
-            stopMic();
-            stopCamera();
-        }
-        configure();
-    }
-
+    /**
+     * Window focus gates only the clipboard (Android blocks background clipboard
+     * reads). It must not reconfigure: that bumps the revision and would stop a mic
+     * a laptop app is recording from.
+     */
     void focus(boolean on) {
         focused = on;
-        configure();
-        if (on) requestAllowedPermissions();
+        if (!on) return;
+        if (deferredText != null) writeClipboard(deferredText);
+        deferredText = null;
+        publishClipboard();
+        requestAllowedPermissions();
     }
 
     void toggle(int bit) {
@@ -129,16 +174,19 @@ final class PhoneSharing {
         }
         save();
         configure();
+        updateService();
     }
 
     void permissionResult() {
         int requested = pendingPermission;
         pendingPermission = 0;
+        if (requested == 0) return;   // notifications only: nothing to reconfigure
         for (int bit : new int[]{2, 4}) if ((requested & bit) != 0) {
             if (permitted(bit)) wanted |= bit; else wanted &= ~bit;
         }
         save();
         main.post(this::configure);
+        updateService();
     }
 
     private boolean permitted(int bit) {
@@ -147,19 +195,24 @@ final class PhoneSharing {
     }
 
     private void requestAllowedPermissions() {
-        if (!supported || !foreground || !focused || pendingPermission != 0) return;
+        if (!supported || !focused || pendingPermission != 0) return;
         java.util.ArrayList<String> permissions = new java.util.ArrayList<>();
         for (int bit : new int[]{2, 4}) if (enabled(bit) && !permitted(bit)) {
             pendingPermission |= bit;
             permissions.add(bit == 2 ? Manifest.permission.RECORD_AUDIO : Manifest.permission.CAMERA);
         }
+        // Without it the service notification is hidden from the shade (it still runs).
+        // Asked once: a denial must not come back on every focus.
+        if ((wanted & 6) != 0 && !prefs.getBoolean("asked_notifications", false)
+                && activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            prefs.edit().putBoolean("asked_notifications", true).apply();
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS);
+        }
         if (!permissions.isEmpty()) activity.requestPermissions(permissions.toArray(new String[0]), PERMISSIONS);
     }
 
     private void configure() {
-        int mask = foreground && focused ? wanted : 0;
-        if (!permitted(2)) mask &= ~2;
-        if (!permitted(4)) mask &= ~4;
+        int mask = allowed();
         gate.configure(mask);
         ready = live = 0;
         stopMic(); stopCamera();
@@ -194,22 +247,25 @@ final class PhoneSharing {
         } else if (kind == SharingProtocol.STATUS) {
             status = new String(payload, 1, payload.length - 1, StandardCharsets.UTF_8);
             android.widget.Toast.makeText(activity, status, android.widget.Toast.LENGTH_LONG).show();
-        } else if (kind == SharingProtocol.CLIPBOARD && foreground && focused && (ready & 1) != 0) {
+        } else if (kind == SharingProtocol.CLIPBOARD && (ready & 1) != 0) {
             String text = new String(payload, 1, payload.length - 1, StandardCharsets.UTF_8);
-            if (!text.equals(lastText)) {
-                writingClipboard = true;
-                lastText = text;
-                clipboard.setPrimaryClip(ClipData.newPlainText("Laptop", text));
-                writingClipboard = false;
-            }
+            if (focused) writeClipboard(text); else deferredText = text;
         }
         changed.run();
+    }
+
+    private void writeClipboard(String text) {
+        if (text.equals(lastText)) return;
+        writingClipboard = true;
+        lastText = text;
+        clipboard.setPrimaryClip(ClipData.newPlainText("Laptop", text));
+        writingClipboard = false;
     }
 
     private void updateCapture() {
         int previous = live;
         String previousStatus = status;
-        int next = foreground && focused && supported ? gate.active(android.os.SystemClock.elapsedRealtime()) : 0;
+        int next = supported ? gate.active(android.os.SystemClock.elapsedRealtime()) : 0;
         if (!permitted(2)) next &= ~2;
         if (!permitted(4)) next &= ~4;
         if ((next & 2) != 0) startMic(); else if (microphone != null) stopMic();
@@ -225,7 +281,7 @@ final class PhoneSharing {
     }
 
     private void publishClipboard() {
-        if (!foreground || !focused || writingClipboard || (ready & 1) == 0 || stream == null) return;
+        if (!focused || writingClipboard || (ready & 1) == 0 || stream == null) return;
         ClipData clip = clipboard.getPrimaryClip();
         if (clip == null || clip.getItemCount() == 0 || clip.getItemAt(0).getText() == null) return;
         String text = clip.getItemAt(0).getText().toString();
@@ -241,6 +297,7 @@ final class PhoneSharing {
             if (generation != (bit == 2 ? gate.revision : cameraGeneration)) return;
             wanted &= ~bit;
             configure();
+            if ((allowed() & 6) == 0) updateService();   // only ever stops it from here
             status = message;
             changed.run();
         });

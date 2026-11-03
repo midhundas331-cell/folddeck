@@ -66,7 +66,21 @@ public class SharingCheck {
         check(gate.active(5101) == 0, "consumer stop releases sensors immediately");
         gate.configure(0);
         gate.ready(gate.revision, 7); gate.demand(gate.revision, 6, 6000);
-        check(gate.active(6001) == 0, "background cannot capture");
+        check(gate.active(6001) == 0, "disabled inputs cannot capture");
+        // Availability is switch + permission only: focus and foreground no longer zero it.
+        check(PhoneSharing.allowedMask(7, true, true) == 7, "all enabled and granted");
+        check(PhoneSharing.allowedMask(7, false, true) == 5, "no mic permission, no mic");
+        check(PhoneSharing.allowedMask(3, true, true) == 3, "camera switch off");
+        check(PhoneSharing.serviceTypes(1) == 0, "clipboard alone needs no foreground service");
+        check(PhoneSharing.serviceTypes(3) == android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE, "mic type");
+        check(PhoneSharing.serviceTypes(7) == (android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                | android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA), "mic + camera types");
+        // No in-app live badge, and no single tap that switches the inputs off.
+        String activity = java.nio.file.Files.readString(java.nio.file.Path.of("android/src/io/folddeck/spike/MainActivity.java"));
+        String sharing = java.nio.file.Files.readString(java.nio.file.Path.of("android/src/io/folddeck/spike/PhoneSharing.java"));
+        check(!activity.contains("sharingBadge") && !activity.contains(" live\""), "live badge removed");
+        check(!sharing.contains("stopInputs") && !activity.contains("stopInputs"), "no one-tap disable");
+        check(!sharing.contains("foreground && focused"), "capture not gated on focus");
         for (int h : new int[]{240, 480, 900}) {
             InputDeckLayout.Boxes base = InputDeckLayout.computeBoxes(1000, h, 8, true, true, true, false, false, 1, 1);
             for (int requested : new int[]{100, 200, 400, 500}) {

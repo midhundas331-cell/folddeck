@@ -102,7 +102,6 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private boolean deckFlip, padLeft, barFlip, padTop, splitOverrideActive, splitOverride;
     private WorkspaceGeometry.ResizeState resizeStartState;
     private PhoneSharing sharing;
-    private TextView sharingBadge;
     private final Runnable resizeFrame = () -> {
         resizeFramePending = false;
         applyPosture(false);
@@ -247,13 +246,6 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
 
-        sharingBadge = Ui.text(this, "", 12, Ui.onAccent());
-        sharingBadge.setPadding(Ui.dp(this, 14), Ui.dp(this, 10), Ui.dp(this, 14), Ui.dp(this, 10));
-        sharingBadge.setBackground(Ui.rounded(Ui.ACCENT, Ui.ACCENT, 16, this));
-        sharingBadge.setOnClickListener(v -> sharing.stopInputs());
-        FrameLayout.LayoutParams sharingLp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        sharingLp.topMargin = Ui.dp(this, 8);
-        root.addView(sharingBadge, sharingLp);
         updateSharing();
 
         // The lock sits above everything and is opaque, so nothing of the desktop
@@ -331,10 +323,6 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         for (TextView b : new TextView[]{coverToggle, theatreToggle}) {
             b.setTextColor(Ui.TEXT);
             b.setBackground(Ui.pressable(Ui.floatingPanel(Ui.SURFACE_HI, Ui.ACCENT, 2, this)));
-        }
-        if (sharingBadge != null) {
-            sharingBadge.setTextColor(Ui.onAccent());
-            sharingBadge.setBackground(Ui.rounded(Ui.ACCENT, Ui.ACCENT, 16, this));
         }
         if (resizeOverlay != null) resizeOverlay.refresh();
         configureTrackpad();
@@ -1608,11 +1596,6 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private void updateSharing() {
         if (sharing == null) return;
         if (settingsView != null) settingsView.updateSharing();
-        if (sharingBadge != null) {
-            int active = sharing.active() & 6;
-            sharingBadge.setVisibility(active == 0 ? View.GONE : View.VISIBLE);
-            sharingBadge.setText((active == 2 ? "Microphone live" : active == 4 ? "Camera live" : "Mic + camera live") + " · Stop");
-        }
     }
 
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
@@ -1838,6 +1821,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     private void startStreamIfReady() {
         if (!wantStream || locked || holder == null || host == null) return;
+        if (stream != null && stream.isPaused() && stream.sameRoute(host, port)) {
+            stream.resume(holder.getSurface());   // same connection; sharing never dropped
+            return;
+        }
         dropStream();
         lastBytes = 0;
         lastNanos = System.nanoTime();
@@ -1918,18 +1905,37 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
      */
     private void dropStream() {
         if (sharing != null) sharing.disconnect();
-        // Clear latched modifiers and any held mouse button before dropping the
-        // socket, so on-screen state matches the host (which also releases
-        // everything on disconnect).
-        if (keyboard != null) keyboard.releaseAll();
-        if (trackpadDeck != null) trackpadDeck.cancelInput();
-        if (pointerPad != null) pointerPad.releaseAll();
-        heldKeys.clear();         // the host releases them as the socket goes
+        releaseHeldInput();
         if (stream != null) {
             stream.stop();
             stream = null;
             streamGeneration++;   // silence anything still in flight from it
         }
+    }
+
+    /**
+     * Clear latched modifiers and any held mouse button, so on-screen state matches
+     * the host (which also releases everything on disconnect).
+     */
+    private void releaseHeldInput() {
+        if (keyboard != null) keyboard.releaseAll();
+        if (trackpadDeck != null) trackpadDeck.cancelInput();
+        if (pointerPad != null) pointerPad.releaseAll();
+        heldKeys.clear();         // the host releases them as the socket goes
+    }
+
+    /**
+     * Surface gone or phone locked. With the phone mic/camera shared, keep the
+     * connection without video, so laptop apps keep using them in the background;
+     * otherwise drop it as before.
+     */
+    private void pauseStream() {
+        if (stream == null || sharing == null || !sharing.keepsConnection()) {
+            dropStream();
+            return;
+        }
+        releaseHeldInput();
+        stream.pause();
     }
 
     private void idle() {
@@ -1971,7 +1977,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     @Override
     public void surfaceDestroyed(SurfaceHolder h) {
         holder = null;
-        dropStream();
+        pauseStream();
     }
 
     private void onUnlocked() {
@@ -1998,16 +2004,17 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     /**
-     * Re-lock and drop the connection.
+     * Re-lock and stop the desktop stream.
      *
-     * Stopping the stream matters beyond the phone: the host only captures while
-     * a client is connected, so locking the phone also stops the laptop
-     * capturing its own screen.
+     * Stopping it matters beyond the phone: the host only captures while a client
+     * wants video, so locking the phone also stops the laptop capturing its own
+     * screen. With phone mic/camera sharing on, the connection itself stays
+     * (paused, no video) so laptop apps keep the phone inputs.
      */
     private void relock() {
         if (locked || lockOverlay == null) return;
         locked = true;
-        dropStream();
+        pauseStream();
         lockOverlay.animate().cancel();
         lockOverlay.setAlpha(1f);
         lockOverlay.setVisibility(View.VISIBLE);
@@ -2074,7 +2081,6 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     @Override
     protected void onResume() {
         super.onResume();
-        if (sharing != null) sharing.foreground(true);
         requestMetaKey(true);
         pinRefreshRate();
         holdLowLatencyWifi(true);
@@ -2083,7 +2089,6 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     @Override
     protected void onPause() {
         super.onPause();
-        if (sharing != null) sharing.foreground(false);
         releaseDeckInput();
         if (resizeOverlay != null) finishResize(false);
         requestMetaKey(false);

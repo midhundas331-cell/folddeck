@@ -14,12 +14,13 @@ import java.lang.reflect.Method;
  */
 public final class SharingHold extends Instrumentation {
     private int seconds;
-    private boolean focus;
+    private boolean focus, cycle;
 
     @Override public void onCreate(Bundle args) {
         super.onCreate(args);
         seconds = Integer.parseInt(args == null ? "60" : args.getString("seconds", "60"));
         focus = args != null && "true".equals(args.getString("focus"));
+        cycle = args != null && "true".equals(args.getString("cycle"));
         start();
     }
 
@@ -43,6 +44,7 @@ public final class SharingHold extends Instrumentation {
                 if (focus) call(field(activity, "sharing"), "focus", true);
             });
             status("CONNECTING", "");
+            if (cycle) cycle(activity);
             long end = SystemClock.uptimeMillis() + seconds * 1000L;
             while (SystemClock.uptimeMillis() < end) {
                 Object sharing = field(activity, "sharing");
@@ -55,6 +57,33 @@ public final class SharingHold extends Instrumentation {
             result.putString("hold", "FAIL: " + e);
             finish(Activity.RESULT_CANCELED, result);
         }
+    }
+
+    /** HOME, back, unlock: the same connection must pause, then decode video again. */
+    private void cycle(Activity activity) throws Exception {
+        SystemClock.sleep(6000);
+        Object stream = field(activity, "stream");
+        int before = (int) field(stream, "decoded");
+        getUiAutomation().executeShellCommand("input keyevent HOME").close();
+        SystemClock.sleep(3000);
+        boolean paused = (boolean) call(stream, "isPaused");
+        // singleTask: this brings the same instance back (startActivitySync would wait for a new one).
+        getTargetContext().startActivity(new Intent().setClassName("io.folddeck.spike",
+                "io.folddeck.spike.MainActivity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        SystemClock.sleep(1500);
+        Activity again = activity;
+        runOnMainSync(() -> {
+            call(field(again, "lockOverlay"), "cancelBiometric");
+            call(again, "onUnlocked");
+        });
+        SystemClock.sleep(1000);
+        int at = (int) field(stream, "decoded");
+        SystemClock.sleep(3000);
+        int after = (int) field(stream, "decoded");
+        boolean ok = paused && field(again, "stream") == stream && !(boolean) call(stream, "isPaused") && after > at;
+        status("CYCLE", (ok ? "PASS" : "FAIL") + " paused=" + paused + " sameConnection=" + (field(again, "stream") == stream)
+                + " decoded " + before + " -> " + at + " -> " + after);
+        if (!ok) throw new AssertionError("pause/resume cycle failed");
     }
 
     /** Streams a line to `am instrument -r` as INSTRUMENTATION_STATUS: stage=... */

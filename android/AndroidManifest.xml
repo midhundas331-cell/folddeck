@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="io.folddeck.spike"
-    android:versionCode="25"
-    android:versionName="0.12.2">
+    android:versionCode="26"
+    android:versionName="0.13.0">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -10,6 +10,12 @@
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Phone mic/camera keep serving laptop apps while FoldDeck is hidden or locked:
+         a microphone|camera foreground service (API 34+ needs the typed permissions). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- To tell the laptop when the phone is on mobile data (lower stream quality). -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Without this BiometricManager throws SecurityException, which the lock
@@ -41,5 +47,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".SharingService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|camera" />
     </application>
 </manifest>
