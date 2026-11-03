@@ -115,14 +115,14 @@ class Watcher:
         threading.Thread(target=self.run, args=(callback,), name="pactl-subscribe", daemon=True).start()
 
     def run(self, callback):
-        for line in self.proc.stdout:
-            if is_capture_event(line):
-                callback()
+        with self.proc.stdout:   # closed here, at the EOF close() causes
+            for line in self.proc.stdout:
+                if is_capture_event(line):
+                    callback()
 
     def close(self):
         self.proc.kill()
         self.proc.wait()
-        self.proc.stdout.close()
 
 
 def camera_rate(path):

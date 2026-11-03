@@ -97,21 +97,19 @@ final class H264Stream implements Runnable {
      * and give laptop audio back to the laptop. UI thread; returns once nothing can
      * render into the old Surface.
      */
-    void pause() {
+    synchronized void pause() {
         if (paused) return;
         paused = true;
-        synchronized (this) {
-            surface = null;
-            releaseCodec();
-        }
+        surface = null;
+        releaseCodec();   // waits out an in-flight queue(): both hold this lock
         sendVideo(false);
         sendAudio(false);
     }
 
     /** Visible and unlocked again. The decoder starts at the host's next SPS/PPS (a fresh IDR). */
-    void resume(Surface next) {
+    synchronized void resume(Surface next) {
         if (!paused) return;
-        synchronized (this) { surface = next; }
+        surface = next;
         paused = false;
         if (Prefs.laptopAudio(prefs)) sendAudio(true);
         sendVideo(true);
@@ -364,8 +362,10 @@ final class H264Stream implements Runnable {
                 everOpened = true;
                 consecutiveFailures = 0;
                 outputTarget = new OutputTarget(socket, socket.getOutputStream());
-                if (paused) sendVideo(false);   // reconnected while hidden: stay sharing-only
-                else if (Prefs.laptopAudio(prefs)) sendAudio(true);
+                synchronized (this) {   // not interleaved with a pause()/resume()
+                    if (paused) sendVideo(false);   // reconnected while hidden: stay sharing-only
+                    else if (Prefs.laptopAudio(prefs)) sendAudio(true);
+                }
                 java.util.function.BooleanSupplier mobile = onMobileData;
                 if (mobile != null && mobile.getAsBoolean()) sendNetwork(true);
                 report("streaming");
@@ -557,7 +557,8 @@ final class H264Stream implements Runnable {
         }
     }
 
-    private void queue(byte[] au, boolean keyframe) {
+    private synchronized void queue(byte[] au, boolean keyframe) {
+        if (codec == null) return;   // released by pause() since flushAccessUnit() looked
         try {
             // Release completed output before asking for more input. Otherwise a
             // full output side can make dequeueInputBuffer() fail, and returning

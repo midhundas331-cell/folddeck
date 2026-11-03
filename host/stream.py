@@ -836,6 +836,7 @@ def pump(conn: socket.socket, args, encoder: str, kbd, ptr) -> None:
                         last_report, frames_at_report = now, frames
                         waited = sending = 0.0
                     if want_qp[0] != args.qp or not video.on.is_set():
+                        video.consume_pause()   # left before reading the killed encoder's EOF
                         break
                 else:
                     break

@@ -105,7 +105,10 @@ final class PhoneSharing {
         Intent intent = new Intent(activity, SharingService.class);
         try {
             if (types == 0) activity.stopService(intent);
-            else activity.startForegroundService(intent.putExtra(SharingService.TYPES, types));
+            // startService, not startForegroundService: we are visible, so it is allowed, and a
+            // refused startForeground() then just costs the background inputs instead of
+            // crashing the app ("did not then call startForeground").
+            else activity.startService(intent.putExtra(SharingService.TYPES, types));
             serviceRunning = types;
         } catch (RuntimeException e) {
             android.util.Log.w("FoldDeck/Share", "sharing service", e);
