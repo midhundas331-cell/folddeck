@@ -86,6 +86,41 @@ final class H264Stream implements Runnable {
         offer(new byte[]{7, (byte) (mobile ? 1 : 0)});
     }
 
+    /** MSG_VIDEO: the host stops capturing the screen while this is off. */
+    private void sendVideo(boolean on) {
+        offer(new byte[]{9, (byte) (on ? 1 : 0)});
+    }
+
+    /**
+     * Hidden or locked, but sharing the phone's mic/camera: keep the connection, drop
+     * the decoder (its Surface is about to go) and ask the host to stop the screen
+     * and give laptop audio back to the laptop. UI thread; returns once nothing can
+     * render into the old Surface.
+     */
+    void pause() {
+        if (paused) return;
+        paused = true;
+        synchronized (this) {
+            surface = null;
+            releaseCodec();
+        }
+        sendVideo(false);
+        sendAudio(false);
+    }
+
+    /** Visible and unlocked again. The decoder starts at the host's next SPS/PPS (a fresh IDR). */
+    void resume(Surface next) {
+        if (!paused) return;
+        synchronized (this) { surface = next; }
+        paused = false;
+        if (Prefs.laptopAudio(prefs)) sendAudio(true);
+        sendVideo(true);
+    }
+
+    boolean isPaused() { return paused; }
+
+    boolean sameRoute(String h, int p) { return host.equals(h) && port == p; }
+
     private static final byte[] THEME_UUID =
             "FOLDDECK-THEME-1".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
 
@@ -146,7 +181,8 @@ final class H264Stream implements Runnable {
 
     private final String host;
     private final int port;
-    private final Surface surface;
+    private Surface surface;   // null while paused; guarded by this
+    private volatile boolean paused;
     private final Stats stats;
     private final android.content.SharedPreferences prefs;
 
@@ -328,7 +364,8 @@ final class H264Stream implements Runnable {
                 everOpened = true;
                 consecutiveFailures = 0;
                 outputTarget = new OutputTarget(socket, socket.getOutputStream());
-                if (Prefs.laptopAudio(prefs)) sendAudio(true);
+                if (paused) sendVideo(false);   // reconnected while hidden: stay sharing-only
+                else if (Prefs.laptopAudio(prefs)) sendAudio(true);
                 java.util.function.BooleanSupplier mobile = onMobileData;
                 if (mobile != null && mobile.getAsBoolean()) sendNetwork(true);
                 report("streaming");
@@ -450,7 +487,9 @@ final class H264Stream implements Runnable {
         auNals.add(nal);
         auHasVcl |= isVcl;
 
-        if (codec == null && sps != null && pps != null) {
+        // Configure on a PPS: the host sends SPS/PPS right before every IDR, so the
+        // decoder never starts mid-GOP (matters after resume()).
+        if (type == 8 && codec == null && sps != null) {
             configure();
         }
     }
@@ -482,7 +521,8 @@ final class H264Stream implements Runnable {
     // ------------------------------------------------------------------ //
     // MediaCodec
     // ------------------------------------------------------------------ //
-    private void configure() {
+    private synchronized void configure() {
+        if (surface == null) return;   // paused: video is discarded until resume()
         try {
             // Dimensions come from the SPS once the decoder parses it; the values
             // here only size the initial buffers.
@@ -602,7 +642,7 @@ final class H264Stream implements Runnable {
         sps = pps = null;
     }
 
-    private void releaseCodec() {
+    private synchronized void releaseCodec() {
         MediaCodec c = codec;
         if (c == null) return;
         codec = null;   // the render thread exits within one 20 ms poll
