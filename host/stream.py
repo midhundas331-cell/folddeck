@@ -335,6 +335,7 @@ def serve(args, encoder: str) -> None:
                             kbd=kbd, ptr=ptr, handshake_slots=handshake_slots,
                             active=active)
     finally:
+        close_sessions()
         for dev in (kbd, ptr):
             if dev is not None:
                 dev.close()
@@ -352,6 +353,24 @@ def configure_pairing(requested: bool) -> bool:
 
 
 _live: list[socket.socket | None] = [None]   # the connection that owns the stream, so a newcomer can kick it
+# The live session's teardown (phone defaults, laptop audio). pump() owns it; serve()'s
+# finally runs it too, because a SIGTERM exit never reaches pump()'s own finally.
+_session_cleanups: list = []
+
+
+def close_sessions() -> None:
+    while _session_cleanups:
+        try:
+            _session_cleanups.pop(0)()
+        except Exception as exc:  # noqa: BLE001 -- best effort on the way out
+            print(f"    cleanup failed: {exc!r}", flush=True)
+
+
+def install_signal_handlers() -> None:
+    # systemd stops/restarts with SIGTERM, whose default kills without unwinding:
+    # that left folddeck_mic loaded and still the laptop's default source.
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: sys.exit(0))
 
 
 def dispatch_client(raw, addr, *, args, tls, allow_new, encoder, kbd, ptr,
@@ -710,6 +729,8 @@ def pump(conn: socket.socket, args, encoder: str, kbd, ptr) -> None:
 
     route = audio.AudioRoute()
     shared = sharing.Sharing(send)
+    cleanups = [shared.close, route.stop]
+    _session_cleanups.extend(cleanups)
 
     def audio_sender() -> None:
         # Audio has its own clock. Riding on video frames tied it to the screen:
@@ -802,6 +823,9 @@ def pump(conn: socket.socket, args, encoder: str, kbd, ptr) -> None:
             proc.stdout.close()
         conn.close()
         reader.join(timeout=1)
+        for cleanup in cleanups:
+            if cleanup in _session_cleanups:
+                _session_cleanups.remove(cleanup)
         shared.close()
         route.stop()
 
@@ -869,7 +893,7 @@ def main() -> int:
     print("capture: " + ("KMS (direct framebuffer)" if args.kms
                          else "wf-recorder (compositor screencopy)"))
 
-    signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+    install_signal_handlers()
     try:
         serve(args, encoder)
     except KeyboardInterrupt:
