@@ -3,4 +3,6 @@
     <application android:label="Folddeck UI checks" />
     <instrumentation android:name="io.folddeck.uitest.UiSmoke"
         android:targetPackage="io.folddeck.spike" android:functionalTest="true" />
+    <instrumentation android:name="io.folddeck.uitest.SharingHold"
+        android:targetPackage="io.folddeck.spike" android:functionalTest="true" />
 </manifest>
