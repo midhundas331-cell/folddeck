@@ -878,6 +878,7 @@ is actually installed.
 | 0.9.1 | 18 | Settings back to Omarchy style, modelled on the Omarchy menu: 2px-bordered square card, "Settings…" heading, Nerd Font icon rows, cursor fill + accent label on press, 20% dividers, ToggleSwitch/PanelSlider/ButtonGroup controls; bigger (60dp rows, 17sp mono). Keeps 0.9's wording |
 | 0.9.2 | 19 | Home and How to Use moved onto the Omarchy menu card (connection state + both routes in one section, actions as icon rows); guide rewritten in Apple-style wording; no more desktop flash between sheets |
 | 0.9.3 | 20 | Premium refresh (Inter, rounded Settings) + Home as one Omarchy menu card under a block FOLDDECK; How to Use removed; crossfades between screens; Connect waits on Home for the first frame; animated full screen with fullscreen icons |
+| 0.13.0 | 26 | Phone mic/camera are the laptop defaults whenever connected (no focus gate), keep working hidden/locked (microphone\|camera foreground service; stream pauses video with `MSG_VIDEO` 9 instead of dropping), no in-app live badge, event-driven demand (cold start 216 → 96 ms). Host first: an older host disconnects on type 9. See `docs/superpowers/specs/2026-11-03-phone-inputs-seamless-design.md` |
 | 0.8.3 | 13 | Audio errors cost the sound, not the stream. Ponytail pass: dead helpers removed |
 | 0.8.2 | 12 | Cover wheel full height, 40dp wide |
 | 0.8.1 | 11 | Tells the laptop when it is on mobile data; stream quality QP 20 on Wi-Fi, 26 on mobile (host first) |
