@@ -113,6 +113,8 @@ class Device:
                                           "rate=48000", "channels=1", "sink_properties=device.description=Folddeck-Phone-Transport"))
                 self.modules.append(pactl("load-module", "module-remap-source", f"master={MIC_SINK}.monitor",
                                           "source_name=folddeck_mic", "source_properties=device.description=Folddeck-Phone-Microphone"))
+                # Phone PCM arrives around 5% of full scale; lift it to normal speech level.
+                pactl("set-source-volume", "folddeck_mic", "250%")
                 cmd = ["pacat", "--playback", "--device=" + MIC_SINK, "--raw", "--format=s16le",
                        "--rate=48000", "--channels=1", "--latency-msec=40", "--client-name=Folddeck-Phone-Microphone"]
             else:
@@ -203,13 +205,16 @@ class Sharing:
             self.lock.notify()
 
     def status(self, text):
+        print(f"    sharing: status to phone: {text}", flush=True)
         self.send(nal(STATUS, text.encode("utf-8")[:2048]))
 
     def state(self, kind, mask):
         self.send(nal(kind, self.revision.to_bytes(4, "big") + bytes([mask])))
 
     def configure(self, revision, mask):
+        print(f"    sharing: config rev {revision} mask {mask:03b} (clip/mic/cam bits 1/2/4)", flush=True)
         if revision <= self.revision:
+            print(f"    sharing: ignored stale config rev {revision} <= {self.revision}", flush=True)
             return
         self.revision = revision
         self.demand = 0
@@ -224,6 +229,7 @@ class Sharing:
                 except (OSError, ValueError, subprocess.SubprocessError) as exc:
                     self.mask &= ~bit
                     self.status(str(exc))
+        print(f"    sharing: ready mask {self.mask:03b}, devices {sorted(self.devices)}", flush=True)
         self.state(READY, self.mask)
 
     def poll_demand(self):
@@ -296,8 +302,8 @@ class Sharing:
                             self.send(nal(CLIPBOARD, data))
                     except (OSError, UnicodeError, subprocess.SubprocessError):
                         pass
-        except (OSError, subprocess.SubprocessError):
-            pass  # disconnected socket; pump owns transport teardown
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"    sharing: worker stopped: {exc!r}", flush=True)  # pump owns transport teardown
         finally:
             for device in self.devices.values():
                 device.close()
