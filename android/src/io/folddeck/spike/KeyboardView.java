@@ -102,7 +102,7 @@ class KeyboardView extends View {
         text.setTextAlign(Paint.Align.CENTER);
         text.setTypeface(Ui.MONO);
         edge.setStyle(Paint.Style.STROKE);
-        edge.setStrokeWidth(Math.max(1, Ui.dp(context, 1)));
+        edge.setStrokeWidth(Ui.hair(context));
     }
 
     void setKeyListener(KeyListener l) {
@@ -142,7 +142,7 @@ class KeyboardView extends View {
 
     /** Space between caps for a board this wide; the split trackpad matches it. */
     float keyGap(int width) {
-        return Math.max(2f, width * 0.0022f * gapScale) + Ui.CAP_DEPTH_DP * density * 0.5f;
+        return Math.max(2f, width * 0.0022f * gapScale);
     }
 
     // ------------------------------------------------------------------ //
@@ -325,7 +325,6 @@ class KeyboardView extends View {
         canvas.drawColor(Ui.BG);
         if (!android.animation.ValueAnimator.areAnimatorsEnabled()) bounce.clear();
         long now = SystemClock.uptimeMillis();
-        float lift = Ui.CAP_DEPTH_DP * density / 2f;
         for (Cap cap : caps) {
             float s = bounce.scale(cap.key.code, now);
             boolean scaled = s != 1f;
@@ -335,12 +334,8 @@ class KeyboardView extends View {
             }
             boolean down = held.contains(cap.key.code);
             Ui.drawCap(canvas, cap.rect.left, cap.rect.top, cap.rect.right, cap.rect.bottom,
-                    colourFor(cap.key), edgeFor(cap.key), down, density, fill);
-            // Legends ride the cap: up with the raised body, down when it sinks.
-            canvas.save();
-            canvas.translate(0, down ? lift : -lift);
+                    colourFor(cap.key), edgeFor(cap.key), density, fill);
             drawLegends(canvas, cap);
-            canvas.restore();
             if (scaled) canvas.restore();
         }
         drawNub(canvas);
@@ -353,7 +348,7 @@ class KeyboardView extends View {
 
         // Pressed caps fill with the accent, so their legends switch to the ground.
         boolean pressed = held.contains(key.code);
-        int ink = pressed ? Ui.onAccent() : Ui.TEXT;
+        int ink = pressed ? Ui.TEXT : Ui.TEXT;
         float cx = cap.rect.centerX(), cy = cap.rect.centerY();
 
         // Long labels ("PrtSc", "Shift") need to shrink to fit their cap.
@@ -367,7 +362,7 @@ class KeyboardView extends View {
 
         if (key.shift != null) {
             // Shifted legend above the base one, as printed on a real keycap.
-            text.setColor(pressed ? Ui.onAccent() : Ui.TEXT_DIM);
+            text.setColor(pressed ? Ui.TEXT : Ui.TEXT_DIM);
             canvas.drawText(key.shift, cx, cy - span * 0.06f, text);
             text.setColor(ink);
             canvas.drawText(key.label, cx, cy + span * 0.30f, text);
@@ -381,7 +376,7 @@ class KeyboardView extends View {
             text.setTextSize(Math.min(text.getTextSize(), span * 0.22f * labelScale));
             float fnWidth = text.measureText(key.fnLabel);
             if (fnWidth > available) text.setTextSize(text.getTextSize() * available / fnWidth);
-            text.setColor(pressed ? Ui.onAccent() : fnActive ? Ui.ACCENT : Ui.TEXT_FAINT);
+            text.setColor(pressed ? Ui.TEXT : fnActive ? Ui.ACCENT : Ui.TEXT_FAINT);
             canvas.drawText(key.fnLabel, cx, cy + span * 0.30f, text);
             return;
         }
@@ -423,13 +418,12 @@ class KeyboardView extends View {
      * it reads as "on" without being mistaken for a press.
      */
     private int colourFor(Ev.Key key) {
-        if (held.contains(key.code)) return Ui.ACCENT;
+        if (held.contains(key.code)) return Ui.PRESSED;
         if (state(key.code) == MOD_LOCKED) return Ui.mix(Ui.BG, Ui.ACCENT, 0.35f);
         if (isArmedOrLocked(key.code)) return Ui.SELECTED;
         boolean chunky = Ev.isModifier(key.code) || key.code == Ev.LOCAL_FN
                 || key.code == Ev.CAPSLOCK || key.code == Ev.TAB
                 || key.code == Ev.BACKSPACE || key.code == Ev.ENTER;
-        if (key.code == Ev.ENTER) return Ui.mix(Ui.SURFACE, Ui.ACCENT, 0.16f);
         return chunky ? Ui.SURFACE : Ui.SURFACE_HI;
     }
 

@@ -116,12 +116,12 @@ final class Chassis {
             paint.setColor(Color.BLACK);
             canvas.drawRect(well, paint);
 
-            // The desktop is the focused window, so it wears Hyprland's active
-            // border: the accent, drawn just outside the image.
-            float border = Ui.dp(getContext(), 2);
+            // A hairline just outside the image; the accent is the app frame's
+            // alone, so there is one focused border, as on the laptop.
+            float border = separator(getContext());
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(border);
-            paint.setColor(Ui.mix(Ui.BG, Ui.ACCENT, 0.45f));
+            paint.setColor(Ui.LINE);
             canvas.drawRect(well.left - border / 2, well.top - border / 2,
                     well.right + border / 2, well.bottom + border / 2, paint);
 
@@ -147,7 +147,7 @@ final class Chassis {
 
         /** Width of the line that stands in for the hinge when there is none. */
         static int separator(Context c) {
-            return Ui.dp(c, 2);
+            return Ui.hair(c);
         }
 
         @Override
@@ -155,10 +155,10 @@ final class Chassis {
             super.dispatchDraw(canvas);
             if (chassis || !separated) return;
             // Without the hinge nothing divides the desktop from the keyboard. An
-            // accent line does, drawn over the children so it lands on the shared edge.
+            // hairline does, drawn over the children so it lands on the shared edge.
             int s = separator(getContext());
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(Ui.mix(Ui.BG, Ui.ACCENT, 0.35f));
+            paint.setColor(Ui.LINE);
             canvas.drawRect(0, flipped ? 0 : getHeight() - s, getWidth(), flipped ? s : getHeight(), paint);
         }
     }
@@ -205,9 +205,9 @@ final class Chassis {
             canvas.drawColor(Ui.BG);
             if (!chassis) return;
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(Math.max(1, Ui.dp(getContext(), 1)));
+            paint.setStrokeWidth(Ui.hair(getContext()));
             paint.setColor(Ui.LINE);
-            canvas.drawRoundRect(well, Ui.dp(getContext(), 10), Ui.dp(getContext(), 10), paint);
+            canvas.drawRect(well, paint);
         }
     }
 

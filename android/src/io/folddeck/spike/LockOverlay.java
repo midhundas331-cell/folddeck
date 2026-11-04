@@ -68,7 +68,7 @@ class LockOverlay extends LinearLayout {
 
         LayoutParams markLp = new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
         markLp.setMargins(Ui.dp(activity, 32), 0, Ui.dp(activity, 32), Ui.dp(activity, 28));
-        View mark = Ui.wordmark(activity, 23f);
+        View mark = Ui.blockWordmark(activity, 300);
         content.addView(mark, markLp);
 
         title.setTextColor(Ui.TEXT);
@@ -152,8 +152,8 @@ class LockOverlay extends LinearLayout {
         // Backspace reads as an action, not a value, so it gets no keycap.
         boolean filled = !label.isEmpty() && !label.equals("⌫");
         b.setBackground(label.isEmpty() ? null
-                : Ui.pressable(Ui.rounded(filled ? Ui.SURFACE : Ui.BG,
-                        filled ? Ui.SEPARATOR : Ui.BG, 18, getContext())));
+                : Ui.pressable(Ui.box(filled ? Ui.SURFACE : Ui.BG,
+                        filled ? Ui.LINE : Ui.BG, getContext())));
         b.setFocusable(!label.isEmpty());
         if (label.equals("⌫")) b.setContentDescription("Delete digit");
 
@@ -247,12 +247,12 @@ class LockOverlay extends LinearLayout {
         }
         // The field follows the error hint without shifting the keypad.
         boolean error = hint.getCurrentTextColor() == Ui.ERR;
-        dots.setBackground(Ui.rounded(Ui.SURFACE, error ? Ui.ERR : Ui.SEPARATOR, 18, getContext()));
+        dots.setBackground(Ui.box(Ui.SURFACE, error ? Ui.ERR : Ui.LINE, getContext()));
         dots.setContentDescription(entered.length() + " of " + Lock.PIN_LENGTH + " PIN digits entered");
         for (int i = 0; i < dotViews.length; i++) {
             dotViews[i].setBackground(i < entered.length()
-                    ? Ui.rounded(Ui.ACCENT, Ui.ACCENT, 6, getContext())
-                    : Ui.rounded(Ui.SURFACE_HI, Ui.LINE, 6, getContext()));
+                    ? Ui.box(Ui.ACCENT, Ui.ACCENT, getContext())
+                    : Ui.box(Ui.SURFACE_HI, Ui.LINE, getContext()));
         }
     }
 

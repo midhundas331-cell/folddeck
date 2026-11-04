@@ -12,7 +12,6 @@ import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
-import android.view.animation.PathInterpolator;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
@@ -31,8 +30,10 @@ final class ResizeOverlay extends FrameLayout {
         void change(int target, float fraction);
         boolean horizontal(int target);
         void beginResize();
-        void resizeCorner(int target, int corner, float dxPx, float dyPx, float overlayW, float overlayH);
-        void swap(int from, int to, float dropX, InputDeckLayout.Box toBox);
+        /** Returns how far past the limits the finger is, in px along x and y. */
+        float[] resizeCorner(int target, int corner, float dxPx, float dyPx, float overlayW, float overlayH);
+        /** Moves {@code from} into {@code to}'s place; false when that changes nothing. */
+        boolean swap(int from, int to, float dropX, InputDeckLayout.Box toBox);
         void reset();
         void finish(boolean save);
     }
@@ -44,7 +45,6 @@ final class ResizeOverlay extends FrameLayout {
     private final Path bracketPath = new Path();
     private final RectF box = new RectF();
     private final RectF animBox = new RectF();
-    private final RectF animStartBox = new RectF();
     private final RectF tempBox = new RectF();
     private final RectF dragSourceRect = new RectF();
     private final int[] origin = new int[2], location = new int[2];
@@ -55,11 +55,21 @@ final class ResizeOverlay extends FrameLayout {
     private int selected, pointer = -1;
     private int touchMode = MODE_NONE;
     private int activeCorner = WorkspaceGeometry.CORNER_NONE;
-    private int dragSource = -1, swapTarget = -1;
-    private boolean draggingSwap;
+    private int dragSource = -1, lastUnder = -1, ghostPane = -1;
+    private boolean draggingSwap, swapped, landing;
     private boolean panelAtBottom;
     private float startX, startY, dragX, dragY, startValue;
-    private ValueAnimator boxAnimator;
+
+    /** Follows a finger: no visible lag, no bounce. */
+    private static final float[] TRACK = {0.1f, 1f};
+    /** The selection frame (l, t, r, b), the dragged pane's ghost, and how lifted it is. */
+    private final Spring[] frame = new Spring[4], ghost = new Spring[4];
+    private final Spring lift = new Spring(Motion.SNAPPY[0], Motion.SNAPPY[1], 0.002f);
+    private boolean framePlaced, moving;
+    private long lastFrame;
+    /** Finger travel past the resize limits, px, and whether that has ticked yet. */
+    private float[] overshoot = new float[2];
+    private boolean pastLimit;
 
     ResizeOverlay(Context c, View[] targets, Listener listener) {
         super(c);
@@ -68,11 +78,15 @@ final class ResizeOverlay extends FrameLayout {
         this.touchSlop = ViewConfiguration.get(c).getScaledTouchSlop();
         setWillNotDraw(false);
         setClickable(true);
+        for (int i = 0; i < 4; i++) {
+            frame[i] = new Spring(Motion.SNAPPY[0], Motion.SNAPPY[1], 0.3f);
+            ghost[i] = new Spring(Motion.SNAPPY[0], Motion.SNAPPY[1], 0.3f);
+        }
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
         panel = new LinearLayout(c);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(Ui.dp(c, 12), Ui.dp(c, 6), Ui.dp(c, 12), Ui.dp(c, 8));
-        panel.setBackground(Ui.floatingPanel(Ui.SURFACE, Ui.mix(Ui.LINE, Ui.ACCENT, 0.35f), 1, c));
+        panel.setBackground(Ui.box(Ui.SURFACE, Ui.LINE, c));
         Ui.elevate(panel, c);
         panel.setClickable(true);
 
@@ -85,7 +99,6 @@ final class ResizeOverlay extends FrameLayout {
         title.setGravity(Gravity.CENTER_VERTICAL);
         actions.addView(action(c, "Reset", () -> {
             listener.reset();
-            animateHighlightToSelected();
             refresh();
         }));
         actions.addView(action(c, "Cancel", () -> listener.finish(false)));
@@ -102,7 +115,7 @@ final class ResizeOverlay extends FrameLayout {
             tab.setGravity(Gravity.CENTER);
             tab.setFocusable(true);
             tab.setOnClickListener(v -> {
-                selectTarget(index, true);
+                selectTarget(index);
                 Motion.select(tab);
             });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, Ui.dp(c, 44), 1);
@@ -115,9 +128,9 @@ final class ResizeOverlay extends FrameLayout {
         panel.addView(padChoices);
         slider = new SeekBar(c);
         slider.setMax(1000);
-        android.graphics.drawable.GradientDrawable track = Ui.rounded(Ui.LINE, Ui.LINE, 2, c);
+        android.graphics.drawable.GradientDrawable track = Ui.box(Ui.LINE, Ui.LINE, c);
         android.graphics.drawable.ClipDrawable progress = new android.graphics.drawable.ClipDrawable(
-                Ui.rounded(Ui.ACCENT, Ui.ACCENT, 2, c), Gravity.LEFT,
+                Ui.box(Ui.ACCENT, Ui.ACCENT, c), Gravity.LEFT,
                 android.graphics.drawable.ClipDrawable.HORIZONTAL);
         android.graphics.drawable.LayerDrawable rail = new android.graphics.drawable.LayerDrawable(
                 new android.graphics.drawable.Drawable[]{track, progress});
@@ -128,7 +141,7 @@ final class ResizeOverlay extends FrameLayout {
             rail.setLayerGravity(i, Gravity.CENTER_VERTICAL | Gravity.FILL_HORIZONTAL);
         }
         slider.setProgressDrawable(rail);
-        android.graphics.drawable.GradientDrawable thumb = Ui.rounded(Ui.ACCENT, Ui.SURFACE, 10, c);
+        android.graphics.drawable.GradientDrawable thumb = Ui.box(Ui.ACCENT, Ui.SURFACE, c);
         thumb.setSize(Ui.dp(c, 20), Ui.dp(c, 20));
         thumb.setStroke(Ui.dp(c, 3), Ui.SURFACE);
         slider.setThumb(thumb);
@@ -140,7 +153,6 @@ final class ResizeOverlay extends FrameLayout {
         slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar bar, int progress, boolean user) {
                 if (user) {
-                    if (boxAnimator != null) boxAnimator.cancel();
                     listener.change(selected, progress / 1000f);
                     invalidate();
                 }
@@ -159,39 +171,45 @@ final class ResizeOverlay extends FrameLayout {
         refresh();
     }
 
-    private void selectTarget(int index, boolean animate) {
+    /** The frame springs over to the new pane on its own. */
+    private void selectTarget(int index) {
         if (index < 0 || index >= tabs.length) return;
-        if (animate) captureCurrentHighlight();
         selected = index;
         refresh();
-        if (animate) startHighlightAnimation();
     }
 
-    void animateHighlightToSelected() {
-        captureCurrentHighlight();
-        post(this::startHighlightAnimation);
-    }
-
-    private void captureCurrentHighlight() {
-        if (!animBox.isEmpty()) {
-            animStartBox.set(animBox);
-        } else if (computeTargetRect(selected, tempBox)) {
-            animStartBox.set(tempBox);
+    /** Steps {@code springs} toward {@code to} and writes where they are now into {@code out}. */
+    private boolean spring(Spring[] springs, RectF to, RectF out, float[] feel, float dt, boolean jump) {
+        float[] t = {to.left, to.top, to.right, to.bottom};
+        boolean rest = true;
+        for (int i = 0; i < 4; i++) {
+            Spring sp = springs[i].tune(feel[0], feel[1]);
+            sp.target = t[i];
+            if (jump) {
+                sp.value = t[i];
+                sp.velocity = 0f;
+            } else if (!sp.step(dt)) {
+                rest = false;
+            }
         }
+        out.set(springs[0].value, springs[1].value, springs[2].value, springs[3].value);
+        return !rest;
     }
 
-    private void startHighlightAnimation() {
-        if (boxAnimator != null) boxAnimator.cancel();
-        if (animStartBox.isEmpty() || !ValueAnimator.areAnimatorsEnabled()) {
-            animStartBox.setEmpty();
-            invalidate();
-            return;
-        }
-        boxAnimator = ValueAnimator.ofFloat(0f, 1f);
-        boxAnimator.setDuration(220);
-        boxAnimator.setInterpolator(new PathInterpolator(0.16f, 1f, 0.30f, 1f));
-        boxAnimator.addUpdateListener(a -> invalidate());
-        boxAnimator.start();
+    /** Past a limit the frame keeps following the finger, but with growing resistance. */
+    private static float rubber(float over, float range) {
+        return Math.signum(over) * range * (1f - 1f / (Math.abs(over) * 0.55f / range + 1f));
+    }
+
+    private void stretch(RectF r) {
+        float range = Ui.dp(getContext(), 44), min = Ui.dp(getContext(), 24);
+        float sx = rubber(overshoot[0], range), sy = rubber(overshoot[1], range);
+        boolean left = activeCorner == WorkspaceGeometry.CORNER_TL || activeCorner == WorkspaceGeometry.CORNER_BL;
+        boolean top = activeCorner == WorkspaceGeometry.CORNER_TL || activeCorner == WorkspaceGeometry.CORNER_TR;
+        if (left) r.left = Math.min(r.left + sx, r.right - min);
+        else r.right = Math.max(r.right + sx, r.left + min);
+        if (top) r.top = Math.min(r.top + sy, r.bottom - min);
+        else r.bottom = Math.max(r.bottom + sy, r.top + min);
     }
 
     private TextView action(Context c, String label, Runnable run) {
@@ -200,7 +218,7 @@ final class ResizeOverlay extends FrameLayout {
         button.setPadding(Ui.dp(c, 12), 0, Ui.dp(c, 12), 0);
         button.setMinimumHeight(Ui.dp(c, 48));
         button.setFocusable(true);
-        button.setBackground(Ui.pressable(Ui.rounded(Ui.SURFACE, Ui.SURFACE, 8, c)));
+        button.setBackground(Ui.pressable(Ui.box(Ui.SURFACE, Ui.SURFACE, c)));
         button.setOnClickListener(v -> run.run());
         Motion.press(button);
         return button;
@@ -230,13 +248,15 @@ final class ResizeOverlay extends FrameLayout {
             tabs[i].setEnabled(available);
             tabs[i].setAlpha(available ? 1f : 0.35f);
             tabs[i].setSelected(i == selected);
-            tabs[i].setTextColor(i == selected ? Ui.onAccent() : Ui.TEXT_DIM);
-            tabs[i].setBackground(Ui.pressable(Ui.rounded(i == selected ? Ui.ACCENT : Ui.SURFACE_HI,
-                    i == selected ? Ui.ACCENT : Ui.SEPARATOR, 8, getContext())));
+            tabs[i].setTextColor(i == selected ? Ui.TEXT : Ui.TEXT_DIM);
+            tabs[i].setBackground(Ui.pressable(Ui.box(i == selected ? Ui.SELECTED : Ui.SURFACE,
+                    i == selected ? Ui.SELECTED : Ui.LINE, getContext())));
         }
         slider.setEnabled(tabs[selected].isEnabled());
         slider.setContentDescription(NAMES[selected] + " size");
         slider.setProgress(Math.round(listener.value(selected) * 1000));
+        // After a live swap, whatever now lies under the finger is where it already is.
+        if (draggingSwap) lastUnder = WorkspaceGeometry.hitTarget(primaryBoxes(), dragX, dragY);
         hint.setText(tabs[selected].isEnabled()
                 ? "Grab any corner to resize · drag pane to swap · Done saves"
                 : "Enable this control in App settings to resize it");
@@ -268,8 +288,10 @@ final class ResizeOverlay extends FrameLayout {
             View v = targets[i];
             if (v != null && v.isShown() && v.getWidth() > 0 && v.getHeight() > 0) {
                 v.getLocationInWindow(location);
-                int x = Math.round(location[0] - origin[0] + v.getTranslationX());
-                int y = Math.round(location[1] - origin[1] + v.getTranslationY());
+                // Where the pane is laid out, not where it is sliding through:
+                // hit tests stay still while panes animate.
+                int x = Math.round(location[0] - origin[0] - v.getTranslationX());
+                int y = Math.round(location[1] - origin[1] - v.getTranslationY());
                 boxes[i] = new InputDeckLayout.Box(x, y, v.getWidth(), v.getHeight());
             } else {
                 boxes[i] = new InputDeckLayout.Box(0, 0, 0, 0);
@@ -280,48 +302,44 @@ final class ResizeOverlay extends FrameLayout {
 
     @Override protected void onDraw(Canvas canvas) {
         Context c = getContext();
-        float radius = Ui.dp(c, 10);
+        float radius = 0;   // Omarchy corners are square
         int primarySelected = selected >= HEIGHT ? TRACKPAD : selected;
+        long now = System.nanoTime();
+        // After a rest the first step is one frame, not the whole idle gap.
+        float dt = moving ? (now - lastFrame) / 1e9f : 1f / 60;
+        lastFrame = now;
+        boolean jump = !ValueAnimator.areAnimatorsEnabled();
+        boolean animating = false;
 
         // 1. Draw subtle outlines, corner ticks, and labels for unselected primary panes.
         for (int i = 0; i < 4; i++) {
             if (i == primarySelected || !computeTargetRect(i, tempBox)) continue;
-            boolean isSwapTarget = draggingSwap && swapTarget == i;
-            paint.setColor(isSwapTarget ? Ui.ACCENT : Ui.mix(Ui.LINE, Ui.ACCENT, 0.45f));
+            paint.setColor(Ui.mix(Ui.LINE, Ui.ACCENT, 0.45f));
             paint.setStyle(Paint.Style.FILL);
-            paint.setAlpha(isSwapTarget ? 38 : 10);
+            paint.setAlpha(10);
             canvas.drawRoundRect(tempBox, radius, radius, paint);
 
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(Ui.dp(c, isSwapTarget ? 2.5f : 1f));
-            paint.setAlpha(isSwapTarget ? 235 : 110);
+            paint.setStrokeWidth(Ui.dp(c, 1f));
+            paint.setAlpha(110);
             canvas.drawRoundRect(tempBox, radius, radius, paint);
 
             drawCornerBrackets(canvas, tempBox, Ui.dp(c, 11), Ui.dp(c, 2f),
-                    isSwapTarget ? 235 : 130, WorkspaceGeometry.CORNER_NONE, false);
-
-            if (isSwapTarget) {
-                drawBadge(canvas, tempBox, "⇄ Swap with " + NAMES[i], true);
-            } else {
-                drawBadge(canvas, tempBox, NAMES[i], false);
-            }
+                    130, WorkspaceGeometry.CORNER_NONE, false);
+            drawBadge(canvas, tempBox, NAMES[i], false);
         }
 
-        // 2. Draw the selected pane with smooth interpolated bounds and 4 interactive corner handles.
+        // 2. The selected pane: a frame on springs, so it glides between panes,
+        //    stretches elastically past a limit and settles back on release.
         if (tabs[selected].isEnabled() && computeTargetRect(selected, box)) {
-            if (boxAnimator != null && boxAnimator.isRunning() && !animStartBox.isEmpty()) {
-                float f = (float) boxAnimator.getAnimatedValue();
-                animBox.set(
-                        animStartBox.left + (box.left - animStartBox.left) * f,
-                        animStartBox.top + (box.top - animStartBox.top) * f,
-                        animStartBox.right + (box.right - animStartBox.right) * f,
-                        animStartBox.bottom + (box.bottom - animStartBox.bottom) * f);
-            } else {
-                animBox.set(box);
-            }
+            boolean cornering = touchMode == MODE_CORNER;
+            if (cornering) stretch(box);
+            animating |= spring(frame, box, animBox, cornering ? TRACK : Motion.SNAPPY, dt,
+                    jump || !framePlaced);
+            framePlaced = true;
 
             paint.setColor(Ui.ACCENT);
-            paint.setAlpha(touchMode == MODE_CORNER ? 28 : 16);
+            paint.setAlpha(cornering ? 28 : 16);
             paint.setStyle(Paint.Style.FILL);
             canvas.drawRoundRect(animBox, radius, radius, paint);
 
@@ -331,35 +349,54 @@ final class ResizeOverlay extends FrameLayout {
             canvas.drawRoundRect(animBox, radius, radius, paint);
 
             drawCornerBrackets(canvas, animBox, Ui.dp(c, 20), Ui.dp(c, 3.5f),
-                    255, touchMode == MODE_CORNER ? activeCorner : WorkspaceGeometry.CORNER_NONE, true);
+                    255, cornering ? activeCorner : WorkspaceGeometry.CORNER_NONE, true);
 
             String label = NAMES[selected] + (selected < HEIGHT ? " · ⤡ corners / ⇄ drag"
                     : (listener.horizontal(selected) ? " ↔" : " ↕"));
             drawBadge(canvas, animBox, label, true);
+        } else {
+            framePlaced = false;
         }
 
-        // 3. Draw floating ghost card when dragging a pane to swap positions.
-        if (draggingSwap && dragSource >= 0 && !dragSourceRect.isEmpty()) {
-            float dx = dragX - startX, dy = dragY - startY;
-            tempBox.set(dragSourceRect);
-            tempBox.offset(dx, dy);
-            float insetX = -tempBox.width() * 0.015f, insetY = -tempBox.height() * 0.015f;
-            tempBox.inset(insetX, insetY);
+        // 3. The dragged pane, lifted under the finger; on release it lands in its slot.
+        if (ghostPane >= 0) {
+            if (draggingSwap) {
+                tempBox.set(dragSourceRect);
+                tempBox.offset(dragX - startX, dragY - startY);
+            } else if (!computeTargetRect(ghostPane, tempBox)) {
+                tempBox.set(animBox);
+            }
+            lift.target = draggingSwap ? 1f : 0f;
+            if (jump) lift.value = lift.target;
+            else animating |= !lift.step(dt);
+            float up = Math.max(0f, lift.value);
+            tempBox.inset(-tempBox.width() * 0.02f * up, -tempBox.height() * 0.02f * up);
+            animating |= spring(ghost, tempBox, tempBox, draggingSwap ? TRACK : Motion.SNAPPY, dt,
+                    jump || !landing && !draggingSwap);
 
             paint.setColor(Ui.SURFACE_HI);
-            paint.setAlpha(185);
+            paint.setAlpha(Math.round(185 * Math.min(1f, up)));
             paint.setStyle(Paint.Style.FILL);
-            canvas.drawRoundRect(tempBox, radius, radius, paint);
-
+            canvas.drawRect(tempBox, paint);
             paint.setColor(Ui.ACCENT);
-            paint.setAlpha(245);
+            paint.setAlpha(Math.round(245 * Math.min(1f, up)));
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(Ui.dp(c, 2.2f));
-            canvas.drawRoundRect(tempBox, radius, radius, paint);
-
-            drawBadge(canvas, tempBox, NAMES[dragSource]
-                    + (swapTarget >= 0 ? " ⇄ " + NAMES[swapTarget] : " · drag to another pane"), true);
+            canvas.drawRect(tempBox, paint);
+            if (draggingSwap) drawBadge(canvas, tempBox, "⇄ " + NAMES[ghostPane], true);
+            if (!draggingSwap && lift.value <= 0.002f) {
+                landing = false;
+                ghostPane = -1;
+            }
         }
+
+        // Panes sliding after a swap move under the frame; keep drawing until they stop.
+        for (int i = 0; i < 4 && !animating; i++) {
+            View v = targets[i];
+            animating = v.getTranslationX() != 0f || v.getTranslationY() != 0f;
+        }
+        moving = animating;
+        if (animating) postInvalidateOnAnimation();
     }
 
     private void drawCornerBrackets(Canvas canvas, RectF r, float arm, float stroke,
@@ -367,11 +404,11 @@ final class ResizeOverlay extends FrameLayout {
         Context c = getContext();
         float ax = Math.min(arm, r.width() * 0.32f);
         float ay = Math.min(arm, r.height() * 0.32f);
-        float cr = Math.min(Ui.dp(c, 8), Math.min(ax, ay) * 0.5f);
+        float cr = 0;   // square brackets, as Omarchy
 
         paint.setStyle(Paint.Style.STROKE);
-        paint.setStrokeCap(Paint.Cap.ROUND);
-        paint.setStrokeJoin(Paint.Join.ROUND);
+        paint.setStrokeCap(Paint.Cap.SQUARE);
+        paint.setStrokeJoin(Paint.Join.MITER);
 
         float[] xs = {r.left, r.right, r.left, r.right};
         float[] ys = {r.top, r.top, r.bottom, r.bottom};
@@ -388,7 +425,8 @@ final class ResizeOverlay extends FrameLayout {
                 paint.setStyle(Paint.Style.FILL);
                 paint.setColor(Ui.ACCENT);
                 paint.setAlpha(64);
-                canvas.drawCircle(x, y, Ui.dp(c, 20), paint);
+                float halo = Ui.dp(c, 20);
+                canvas.drawRect(x - halo, y - halo, x + halo, y + halo, paint);
             }
 
             paint.setStyle(Paint.Style.STROKE);
@@ -408,10 +446,11 @@ final class ResizeOverlay extends FrameLayout {
                 paint.setStyle(Paint.Style.FILL);
                 paint.setColor(Ui.ACCENT);
                 paint.setAlpha(alpha);
-                canvas.drawCircle(x, y, nodeR, paint);
+                canvas.drawRect(x - nodeR, y - nodeR, x + nodeR, y + nodeR, paint);
+                float dot = nodeR * 0.42f;
                 paint.setColor(Ui.onAccent());
                 paint.setAlpha(alpha);
-                canvas.drawCircle(x, y, nodeR * 0.42f, paint);
+                canvas.drawRect(x - dot, y - dot, x + dot, y + dot, paint);
             }
         }
     }
@@ -440,14 +479,14 @@ final class ResizeOverlay extends FrameLayout {
         paint.setStyle(Paint.Style.FILL);
         paint.setColor(accent ? Ui.ACCENT : Ui.SURFACE_HI);
         paint.setAlpha(accent ? 240 : 205);
-        canvas.drawRoundRect(cx - halfW, cy - halfH, cx + halfW, cy + halfH, halfH, halfH, paint);
+        canvas.drawRect(cx - halfW, cy - halfH, cx + halfW, cy + halfH, paint);
 
         if (!accent) {
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(Ui.dp(c, 1));
             paint.setColor(Ui.mix(Ui.LINE, Ui.ACCENT, 0.4f));
             paint.setAlpha(180);
-            canvas.drawRoundRect(cx - halfW, cy - halfH, cx + halfW, cy + halfH, halfH, halfH, paint);
+            canvas.drawRect(cx - halfW, cy - halfH, cx + halfW, cy + halfH, paint);
         }
 
         paint.setStyle(Paint.Style.FILL);
@@ -466,8 +505,10 @@ final class ResizeOverlay extends FrameLayout {
                 startY = dragY = e.getY();
                 activeCorner = WorkspaceGeometry.CORNER_NONE;
                 dragSource = -1;
-                swapTarget = -1;
                 draggingSwap = false;
+                swapped = false;
+                overshoot = new float[2];
+                pastLimit = false;
 
                 InputDeckLayout.Box[] boxes = primaryBoxes();
                 int hitCorner = WorkspaceGeometry.hitCorner(boxes, selected, startX, startY,
@@ -475,10 +516,7 @@ final class ResizeOverlay extends FrameLayout {
                 if (hitCorner >= 0) {
                     int target = hitCorner >> 4;
                     int corner = hitCorner & 0xF;
-                    if (selected != target) {
-                        selectTarget(target, false);
-                    }
-                    if (boxAnimator != null) boxAnimator.cancel();
+                    if (selected != target) selectTarget(target);
                     touchMode = MODE_CORNER;
                     activeCorner = corner;
                     listener.beginResize();
@@ -492,6 +530,7 @@ final class ResizeOverlay extends FrameLayout {
                 if (hitPane >= 0) {
                     touchMode = MODE_PAN_OR_SWAP;
                     dragSource = hitPane;
+                    lastUnder = hitPane;
                     computeTargetRect(hitPane, dragSourceRect);
                     listener.beginResize();
                     startValue = listener.value(selected);
@@ -512,8 +551,11 @@ final class ResizeOverlay extends FrameLayout {
                 dragY = y;
 
                 if (touchMode == MODE_CORNER) {
-                    listener.resizeCorner(selected, activeCorner,
+                    overshoot = listener.resizeCorner(selected, activeCorner,
                             x - startX, y - startY, getWidth(), getHeight());
+                    boolean past = Math.max(Math.abs(overshoot[0]), Math.abs(overshoot[1])) > Ui.dp(c, 16);
+                    if (past && !pastLimit) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                    pastLimit = past;
                     slider.setProgress(Math.round(listener.value(selected) * 1000));
                     invalidate();
                     return true;
@@ -522,23 +564,22 @@ final class ResizeOverlay extends FrameLayout {
                 if (touchMode == MODE_PAN_OR_SWAP) {
                     if (!draggingSwap && Math.hypot(x - startX, y - startY) > touchSlop) {
                         draggingSwap = true;
+                        ghostPane = dragSource;
+                        landing = false;
+                        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
                     }
                     if (draggingSwap) {
+                        // Live: the panes trade places the moment the finger enters
+                        // another one, so you see the layout before you let go.
                         InputDeckLayout.Box[] boxes = primaryBoxes();
                         int under = WorkspaceGeometry.hitTarget(boxes, x, y);
-                        int nextSwap = (under >= 0 && under != dragSource) ? under : -1;
-                        if (nextSwap != swapTarget) {
-                            swapTarget = nextSwap;
-                            if (swapTarget >= 0) {
-                                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                        if (under != lastUnder) {
+                            lastUnder = under;
+                            if (under >= 0 && under != dragSource
+                                    && listener.swap(dragSource, under, x, boxes[under])) {
+                                swapped = true;
+                                performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
                             }
-                        }
-                        if (swapTarget < 0 && selected != dragSource) {
-                            boolean horizontal = listener.horizontal(selected);
-                            float delta = horizontal ? (x - startX) / Math.max(1f, getWidth())
-                                    : (y - startY) / Math.max(1f, getHeight());
-                            listener.change(selected, Motion.clamp(startValue + delta, 0f, 1f));
-                            slider.setProgress(Math.round(listener.value(selected) * 1000));
                         }
                         invalidate();
                     }
@@ -561,25 +602,19 @@ final class ResizeOverlay extends FrameLayout {
             case MotionEvent.ACTION_UP: {
                 if (e.getActionMasked() == MotionEvent.ACTION_UP && touchMode == MODE_PAN_OR_SWAP) {
                     if (!draggingSwap && dragSource >= 0) {
-                        selectTarget(dragSource, true);
+                        selectTarget(dragSource);
                         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
-                    } else if (draggingSwap && swapTarget >= 0 && swapTarget != dragSource) {
-                        InputDeckLayout.Box[] boxes = primaryBoxes();
-                        selectTarget(dragSource, false);
-                        captureCurrentHighlight();
-                        listener.swap(dragSource, swapTarget, dragX, boxes[swapTarget]);
+                    } else if (swapped) {
+                        selectTarget(dragSource);
                         performHapticFeedback(HapticFeedbackConstants.CONFIRM);
-                        post(() -> {
-                            startHighlightAnimation();
-                            refresh();
-                        });
                     }
                 }
+                landing = draggingSwap;
+                overshoot = new float[2];   // the frame springs back from any stretch
                 pointer = -1;
                 touchMode = MODE_NONE;
                 activeCorner = WorkspaceGeometry.CORNER_NONE;
                 dragSource = -1;
-                swapTarget = -1;
                 draggingSwap = false;
                 performClick();
                 refresh();

@@ -75,8 +75,8 @@ repaints within a second, without dropping the stream.
   shortcuts (Hyprland-style chords like `SUPER+SHIFT+B`): a swipeable row upright, a
   two-column scrolling deck in landscape. Add, edit, delete, and long-press-drag to
   rearrange.
-- **Premium workspace UI** — an adaptive dashboard, softly lit cards, bundled
-  Inter and JetBrains Mono typography, tactile keycaps, and the live laptop
+- **Omarchy workspace UI** — square corners, 1px borders, flat fills and
+  JetBrains Mono throughout, copied from Omarchy's own shell, in the live laptop
   palette. Shared-axis page transitions, staggered entrances, and animated
   switches and a brief blur-to-focus page entrance respect Android's animation
   setting. Key legends fit both the height and width of resized keycaps.
@@ -174,6 +174,5 @@ PLAN.md               the original (larger, unbuilt) architecture
 ## Licence
 
 MIT — see [LICENSE](LICENSE). The bundled fonts use the SIL Open Font License:
-[JetBrains Mono](android/assets/fonts/OFL.txt) and
-[Inter](android/assets/fonts/Inter-OFL.txt).
+[JetBrains Mono](android/assets/fonts/OFL.txt).
 FoldDeck is not affiliated with Omarchy, Samsung or Lenovo.

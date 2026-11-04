@@ -82,7 +82,7 @@ class AddressView extends Panel {
             sb.append(". Neither address above may be one of these.");
             TextView own = Ui.text(c, sb.toString(), Ui.T_LABEL, Ui.TEXT_DIM);
             own.setPadding(Ui.dp(c, 14), Ui.dp(c, 12), Ui.dp(c, 14), Ui.dp(c, 12));
-            own.setBackground(Ui.rounded(Ui.SURFACE, Ui.SEPARATOR, 14, c));
+            own.setBackground(Ui.box(Ui.SURFACE, Ui.LINE, c));
             body.addView(own, Ui.fillW(c, 0));
         }
     }
@@ -113,7 +113,7 @@ class AddressView extends Panel {
             view = new LinearLayout(c);
             view.setOrientation(LinearLayout.VERTICAL);
             view.setPadding(Ui.dp(c, 16), Ui.dp(c, 14), Ui.dp(c, 16), Ui.dp(c, 16));
-            view.setBackground(Ui.rounded(Ui.SURFACE, Ui.SEPARATOR, 16, c));
+            view.setBackground(Ui.box(Ui.SURFACE, Ui.LINE, c));
 
             TextView title = Ui.text(c, label, Ui.T_BODY, Ui.TEXT);
             title.setTypeface(Ui.FONT_BOLD);

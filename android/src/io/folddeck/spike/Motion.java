@@ -3,7 +3,10 @@ package io.folddeck.spike;
 import android.animation.Animator;
 import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
+import android.animation.TimeInterpolator;
 import android.animation.ValueAnimator;
+import android.util.Property;
+import android.view.Choreographer;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
@@ -11,42 +14,196 @@ import android.view.animation.DecelerateInterpolator;
 import android.view.animation.PathInterpolator;
 
 import java.lang.ref.WeakReference;
-import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.WeakHashMap;
 
 /** Small motion grammar shared by every screen and control. */
 final class Motion {
     static final float PRESS_SCALE = 0.975f;
-    static final long PRESS_MS = 75;
-    static final long RELEASE_MS = 300;
-    static final long ENTER_MS = 260;
-    static final long FADE_MS = 200;
-    static final long THEATRE_MS = 340;
-    static final long COVER_SWITCH_MS = 260;
-    static final float COVER_OVERSHOOT = 1.18f;
 
-    private static final Map<View, WeakReference<Animator>> PRESS_ANIMATORS =
-            Collections.synchronizedMap(new WeakHashMap<>());
+    // The feels everything shares, as {response seconds, damping ratio}.
+    // Apple's model: ratio 1 never overshoots, below 1 lands with a small bounce.
+    /** Content arriving, highlights moving. */
+    static final float[] SMOOTH = {0.42f, 0.88f};
+    /** Whole screens pushing and popping: never overshoots, so no gap shows. */
+    static final float[] NAV = {0.48f, 1f};
+    /** Things that land somewhere new: swapped panes, a released handle. */
+    static final float[] SNAPPY = {0.34f, 0.8f};
+    /** Opacity: overshoot would mean a flash. */
+    static final float[] FADE = {0.3f, 1f};
+    /** Finger down: immediate. */
+    static final float[] PRESS = {0.12f, 1f};
+    /** Finger up: one small bounce back. */
+    static final float[] RELEASE = {0.34f, 0.6f};
+
+    /** Every spring a view has, by property, so a new target keeps the current speed. */
+    private static final Map<View, Map<Property<View, Float>, Anim>> SPRINGS = new WeakHashMap<>();
 
     private Motion() { }
 
-    private static PathInterpolator spring() {
-        // Lazy so pure JVM checks can inspect the motion contract without
-        // instantiating Android framework stubs.
-        return new PathInterpolator(0.16f, 1f, 0.30f, 1f);
+    interface Sink {
+        void set(float value);
+    }
+
+    /**
+     * One {@link Spring} driving one value, frame by frame. Retargeting while it
+     * runs keeps its velocity, so any motion can be grabbed mid-flight. With
+     * animations off in Android settings it lands at once.
+     */
+    static final class Anim implements Choreographer.FrameCallback {
+        final Spring spring;
+        private final Sink sink;
+        private Runnable end;
+        private boolean running;
+        private long last;
+
+        Anim(float[] feel, float precision, Sink sink) {
+            spring = new Spring(feel[0], feel[1], precision);
+            this.sink = sink;
+        }
+
+        Anim feel(float[] feel) {
+            spring.tune(feel[0], feel[1]);
+            return this;
+        }
+
+        /** From {@code from}, keeping any speed it already has, to {@code target}; then {@code end}. */
+        Anim to(float from, float target, Runnable end) {
+            spring.value = from;
+            spring.target = target;
+            this.end = end;
+            if (!ValueAnimator.areAnimatorsEnabled()) {
+                settle();
+            } else if (!running) {
+                running = true;
+                last = System.nanoTime();
+                Choreographer.getInstance().postFrameCallback(this);
+            }
+            return this;
+        }
+
+        boolean running() { return running; }
+
+        /** Stops where it is, without running the end action. */
+        void stop() {
+            Choreographer.getInstance().removeFrameCallback(this);
+            running = false;
+            spring.velocity = 0f;
+            end = null;
+        }
+
+        @Override public void doFrame(long now) {
+            float dt = now > last ? (now - last) / 1e9f : 1f / 120;
+            last = now;
+            if (spring.step(dt)) {
+                settle();
+            } else {
+                sink.set(spring.value);
+                Choreographer.getInstance().postFrameCallback(this);
+            }
+        }
+
+        private void settle() {
+            Choreographer.getInstance().removeFrameCallback(this);
+            running = false;
+            spring.value = spring.target;
+            spring.velocity = 0f;
+            sink.set(spring.target);
+            Runnable e = end;
+            end = null;
+            if (e != null) e.run();
+        }
+    }
+
+    /** The spring behind one property of a view, made on first use. */
+    static Anim spring(View view, Property<View, Float> property, float[] feel) {
+        Map<Property<View, Float>, Anim> springs = SPRINGS.computeIfAbsent(view, v -> new HashMap<>());
+        Anim a = springs.get(property);
+        if (a == null) {
+            // Weak, so a spring never keeps a removed view alive.
+            WeakReference<View> ref = new WeakReference<>(view);
+            boolean px = property == View.TRANSLATION_X || property == View.TRANSLATION_Y
+                    || property == View.TRANSLATION_Z || property == View.ROTATION;
+            a = new Anim(feel, px ? 0.3f : 0.001f, value -> {
+                View v = ref.get();
+                if (v != null) property.set(v, value);
+            });
+            springs.put(property, a);
+        }
+        return a.feel(feel);
+    }
+
+    /** Springs a view property from wherever it is now to {@code target}. */
+    static Anim to(View view, Property<View, Float> property, float target, float[] feel, Runnable end) {
+        return spring(view, property, feel).to(property.get(view), target, end);
+    }
+
+    static Anim to(View view, Property<View, Float> property, float target, float[] feel) {
+        return to(view, property, target, feel, null);
+    }
+
+    /** Whether any spring on the view is still running. */
+    static boolean moving(View view) {
+        Map<Property<View, Float>, Anim> springs = SPRINGS.get(view);
+        if (springs != null) for (Anim a : springs.values()) if (a.running()) return true;
+        return false;
+    }
+
+    /** Stops every spring on the view where it stands. */
+    static void stop(View view) {
+        Map<Property<View, Float>, Anim> springs = SPRINGS.get(view);
+        if (springs != null) for (Anim a : springs.values()) a.stop();
+    }
+
+    /**
+     * A screen's dimming as a property, drawn as a black foreground so the
+     * screen stays opaque. A holder class so JVM checks never build it.
+     */
+    static final class Dim {
+        static final Property<View, Float> PROPERTY = new android.util.FloatProperty<View>("dim") {
+            @Override public void setValue(View v, float dim) {
+                android.graphics.drawable.Drawable d = v.getForeground();
+                if (dim <= 0f) {
+                    if (d instanceof android.graphics.drawable.ColorDrawable) v.setForeground(null);
+                    return;
+                }
+                if (!(d instanceof android.graphics.drawable.ColorDrawable)) {
+                    d = new android.graphics.drawable.ColorDrawable(android.graphics.Color.BLACK);
+                    v.setForeground(d);
+                }
+                d.setAlpha(Math.round(255 * Math.min(1f, dim)));
+            }
+
+            @Override public Float get(View v) {
+                android.graphics.drawable.Drawable d = v.getForeground();
+                return d instanceof android.graphics.drawable.ColorDrawable ? d.getAlpha() / 255f : 0f;
+            }
+        };
+
+        private Dim() { }
+    }
+
+    /** The spring as a fixed-duration curve, for framework animators and transitions. */
+    static TimeInterpolator curve(float[] feel) {
+        float seconds = Spring.seconds(feel[0], feel[1]);
+        return f -> f >= 1f ? 1f : Spring.curve(feel[0], feel[1], f * seconds);
+    }
+
+    /** The duration to pair with {@link #curve}. */
+    static long millis(float[] feel) {
+        return Math.round(Spring.seconds(feel[0], feel[1]) * 1000);
     }
 
     static void press(View view) {
         view.setOnTouchListener((v, event) -> {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    animatePressScale(v, PRESS_SCALE, PRESS_MS,
-                            new DecelerateInterpolator());
+                    animatePressScale(v, true);
                     break;
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
-                    animatePressScale(v, 1f, RELEASE_MS, Bounce::backOut);
+                    animatePressScale(v, false);
                     break;
                 default:
                     break;
@@ -76,7 +233,7 @@ final class Motion {
                     start[2] = v.getTranslationX();
                     start[3] = v.getTranslationY();
                     dragging[0] = false;
-                    animatePressScale(v, PRESS_SCALE, PRESS_MS, new DecelerateInterpolator());
+                    animatePressScale(v, true);
                     return false;
                 case MotionEvent.ACTION_MOVE: {
                     float dx = event.getRawX() - start[0], dy = event.getRawY() - start[1];
@@ -98,7 +255,7 @@ final class Motion {
                 }
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
-                    animatePressScale(v, 1f, RELEASE_MS, Bounce::backOut);
+                    animatePressScale(v, false);
                     if (!dragging[0]) return false;
                     dragging[0] = false;
                     onDrop.at(v.getTranslationX(), v.getTranslationY());
@@ -117,56 +274,28 @@ final class Motion {
         return true;
     }
 
-    private static void animatePressScale(View view, float target, long duration,
-                                          android.animation.TimeInterpolator interpolator) {
-        WeakReference<Animator> priorRef = PRESS_ANIMATORS.get(view);
-        Animator prior = priorRef == null ? null : priorRef.get();
-        if (prior != null) prior.cancel();
+    private static void animatePressScale(View view, boolean down) {
         if (!ValueAnimator.areAnimatorsEnabled()) {
+            stop(view);
             view.setScaleX(1f);
             view.setScaleY(1f);
             view.setTranslationZ(0f);
             return;
         }
-
-        ObjectAnimator sx = ObjectAnimator.ofFloat(view, View.SCALE_X,
-                view.getScaleX(), target);
-        ObjectAnimator sy = ObjectAnimator.ofFloat(view, View.SCALE_Y,
-                view.getScaleY(), target);
-        float targetZ = target < 1f ? -Ui.dp(view.getContext(), 2) : 0f;
-        ObjectAnimator z = ObjectAnimator.ofFloat(view, View.TRANSLATION_Z,
-                view.getTranslationZ(), targetZ);
-        AnimatorSet set = new AnimatorSet();
-        set.playTogether(sx, sy, z);
-        set.setDuration(duration);
-        set.setInterpolator(interpolator);
-        PRESS_ANIMATORS.put(view, new WeakReference<>(set));
-        set.start();
+        float[] feel = down ? PRESS : RELEASE;
+        float scale = down ? PRESS_SCALE : 1f;
+        to(view, View.SCALE_X, scale, feel);
+        to(view, View.SCALE_Y, scale, feel);
+        to(view, View.TRANSLATION_Z, down ? -Ui.dp(view.getContext(), 2) : 0f, feel);
     }
 
     static void enter(View view) {
         reveal(view, 0, 0, Ui.dp(view.getContext(), 12));
     }
 
-    /** Shared-axis entry, confined to content above an opaque page background. */
+    /** A page arriving from the side it was reached from (1 forward, -1 back, 0 in place). */
     static void page(View view, int direction) {
-        reveal(view, 0, Ui.dp(view.getContext(), 20) * direction, 0);
-        // A brief optical settle, only on page content. Never blur the video decoder surface.
-        if (!ValueAnimator.areAnimatorsEnabled()) return;
-        android.graphics.RenderEffect[] blur = new android.graphics.RenderEffect[5];
-        for (int i = 1; i < blur.length; i++) {
-            float radius = i * view.getResources().getDisplayMetrics().density * 0.6f;
-            blur[i] = android.graphics.RenderEffect.createBlurEffect(radius, radius,
-                    android.graphics.Shader.TileMode.CLAMP);
-        }
-        view.setRenderEffect(blur[4]);
-        view.animate().setUpdateListener(a -> {
-            int step = Math.max(0, Math.round(4 * (1f - a.getAnimatedFraction() * 1.5f)));
-            view.setRenderEffect(blur[step]);
-        }).withEndAction(() -> {
-            view.setRenderEffect(null);
-            view.animate().setUpdateListener(null);
-        });
+        reveal(view, 0, Ui.dp(view.getContext(), 32) * direction, 0);
     }
 
     static void stagger(android.view.ViewGroup group) {
@@ -180,9 +309,7 @@ final class Motion {
 
     private static void reveal(View view, long delay, float x, float y) {
         view.animate().cancel();
-        view.animate().setUpdateListener(null);
-        view.setRenderEffect(null);
-        view.animate().setListener(null).withEndAction(null);
+        stop(view);
         view.setScaleX(1f);
         view.setScaleY(1f);
         if (!ValueAnimator.areAnimatorsEnabled()) {
@@ -194,8 +321,13 @@ final class Motion {
         view.setAlpha(0f);
         view.setTranslationX(x);
         view.setTranslationY(y);
-        view.animate().alpha(1f).translationX(0f).translationY(0f).setStartDelay(delay)
-                .setDuration(ENTER_MS).setInterpolator(spring()).start();
+        Runnable go = () -> {
+            to(view, View.ALPHA, 1f, FADE);
+            to(view, View.TRANSLATION_X, 0f, SMOOTH);
+            to(view, View.TRANSLATION_Y, 0f, SMOOTH);
+        };
+        if (delay > 0) view.postDelayed(go, delay);
+        else go.run();
     }
 
     /**
@@ -205,23 +337,14 @@ final class Motion {
      */
     static void fade(View view, boolean in, Runnable end) {
         view.animate().cancel();
-        view.animate().setListener(null).setStartDelay(0);
-        if (!ValueAnimator.areAnimatorsEnabled()) {
-            view.setAlpha(in ? 1f : 0f);
-            if (end != null) end.run();
-            return;
-        }
-        view.animate().alpha(in ? 1f : 0f).setDuration(FADE_MS)
-                .setInterpolator(in ? new DecelerateInterpolator(1.5f)
-                        : new PathInterpolator(0.4f, 0f, 1f, 1f))
-                .withEndAction(end).start();
+        to(view, View.ALPHA, in ? 1f : 0f, FADE, end);
     }
 
     static void select(View view) {
         if (!ValueAnimator.areAnimatorsEnabled()) return;
         view.setScaleX(0.97f);
         view.setScaleY(0.97f);
-        animatePressScale(view, 1f, 200, spring());
+        animatePressScale(view, false);
     }
 
     static void shake(View view) {
@@ -256,7 +379,7 @@ final class Motion {
         AnimatorSet set = new AnimatorSet();
         set.playTogether(alpha, sx, sy);
         set.setDuration(620);
-        set.setInterpolator(spring());
+        set.setInterpolator(new PathInterpolator(0.45f, 0f, 0.55f, 1f));   // breathing, not springing
         Pulse pulse = new Pulse(view, set);
         view.setTag(pulse);
         view.addOnAttachStateChangeListener(pulse);

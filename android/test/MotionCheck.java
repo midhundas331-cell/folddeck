@@ -8,20 +8,21 @@ public class MotionCheck {
 
     public static void main(String[] args) {
         check(Motion.PRESS_SCALE >= 0.96f && Motion.PRESS_SCALE < 1f, "press scale is tactile, not theatrical");
-        check(Motion.PRESS_MS <= 100, "press response is immediate");
-        check(Motion.ENTER_MS >= 160 && Motion.ENTER_MS <= 260, "screen entry is smooth but quick");
-        check(Motion.COVER_SWITCH_MS >= 220 && Motion.COVER_SWITCH_MS <= 300,
-                "cover console transition stays fast");
-        check(Motion.COVER_OVERSHOOT >= 1.05f && Motion.COVER_OVERSHOOT <= 1.35f,
-                "cover console motion has restrained bounce");
+        check(Motion.PRESS[0] <= 0.15f && Motion.PRESS[1] >= 1f, "press response is immediate and flat");
+        check(Motion.NAV[1] >= 1f, "screens never overshoot, so no gap shows at the edge");
+        check(Motion.FADE[1] >= 1f, "opacity never overshoots into a flash");
+        check(Motion.RELEASE[1] >= 0.5f && Motion.RELEASE[1] < 1f, "release bounces, restrained");
+        for (float[] feel : new float[][]{Motion.SMOOTH, Motion.NAV, Motion.SNAPPY,
+                Motion.FADE, Motion.PRESS, Motion.RELEASE}) {
+            check(Spring.seconds(feel[0], feel[1]) < 0.8f, "every shared spring settles quickly");
+        }
         check(Motion.shouldPulse(HomeView.PHASE_CONNECTING), "connecting status pulses");
         check(Motion.shouldPulse(HomeView.PHASE_FINDING), "route search pulses");
         check(!Motion.shouldPulse(HomeView.PHASE_STREAMING), "stable status does not animate forever");
         check(Motion.pressKeepsTranslationIndependent(),
                 "press feedback must not cancel shortcut reorder translation");
-        check(Ui.FLOAT_LOW_DP < Ui.FLOAT_MID_DP
-                        && Ui.FLOAT_MID_DP < Ui.FLOAT_ELEVATION_DP,
-                "depth tokens preserve low, middle and action hierarchy");
+        check(Ui.FLOAT_MID_DP < Ui.FLOAT_ELEVATION_DP,
+                "z-order tiers keep floating buttons above the deck");
         check(Ui.FLOAT_ELEVATION_DP >= 6f && Ui.FLOAT_ELEVATION_DP <= 12f,
                 "floating controls have restrained physical depth");
         System.out.println("MotionCheck ok");

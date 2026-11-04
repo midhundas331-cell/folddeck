@@ -18,8 +18,6 @@ import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
-import android.view.animation.OvershootInterpolator;
-import android.view.animation.PathInterpolator;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -95,7 +93,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private ResizeOverlay resizeOverlay;
     private int resizePosture = -1;
     private float monitorFraction = -1f, padScale = 1f, barScale = 1f;
-    private boolean resizeFramePending;
+    private boolean resizeFramePending, resizeSnapped;
     private boolean barBesideMonitor;
     private float padHeight = -1f, wheelWidth = 28f, buttonHeight = 40f;
     private float padHeightLimit = 500f;
@@ -150,6 +148,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     private long lastBytes = 0;
     private long lastNanos = 0;
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -265,12 +264,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     /**
      * The whole app wears the focused-window border Hyprland draws on the laptop:
-     * the accent, at Omarchy's border_size of 2. Drawn over the children and
+     * the accent, two hairlines wide, as Hyprland's border_size 2 against Omarchy's 1px. Drawn over the children and
      * padded in by the same amount, so nothing — not the edge keys, not the
      * video — is covered, and the lid and base stay symmetric about the crease.
      */
     private FrameLayout framed() {
-        final int width = Ui.dp(this, 2);
+        final int width = 2 * Ui.hair(this);
         FrameLayout f = new FrameLayout(this) {
             final android.graphics.Paint paint = new android.graphics.Paint();
 
@@ -280,7 +279,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 if (theatre || screen != SCREEN_DECK || locked) return;
                 paint.setStyle(android.graphics.Paint.Style.STROKE);
                 paint.setStrokeWidth(width);
-                paint.setColor(Ui.mix(Ui.BG, Ui.ACCENT, 0.35f));
+                // Solid accent, as Hyprland's col.active_border: FoldDeck is the
+                // focused window, so it wears the focused border.
+                paint.setColor(Ui.ACCENT);
                 canvas.drawRect(width / 2f, width / 2f,
                         getWidth() - width / 2f, getHeight() - width / 2f, paint);
             }
@@ -322,7 +323,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 trackpadDeck, pointerPad, coverWheel}) v.invalidate();
         for (TextView b : new TextView[]{coverToggle, theatreToggle}) {
             b.setTextColor(Ui.TEXT);
-            b.setBackground(Ui.pressable(Ui.floatingPanel(Ui.SURFACE_HI, Ui.ACCENT, 2, this)));
+            b.setBackground(Ui.pressable(Ui.box(Ui.SURFACE_HI, Ui.ACCENT, this)));
         }
         if (resizeOverlay != null) resizeOverlay.refresh();
         configureTrackpad();
@@ -497,7 +498,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 // Full height, flush right, always: no bars above or below the
                 // desktop. The deck takes whatever width is left and, when that is
                 // narrow (laptop layout off), shrinks to one column of small labels.
-                // The image gives up a 2dp line where a border must show: top and
+                // The image gives up a hairline where a border must show: top and
                 // bottom in the laptop posture, where the screen well draws its accent
                 // border just outside the image (so it sits level with the deck's);
                 // bottom only without the hinge, for the separator line.
@@ -691,7 +692,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         TextView b = Ui.text(this, glyph, Ui.T_TITLE, Ui.TEXT);
         b.setGravity(Gravity.CENTER);
         b.setContentDescription(description);
-        b.setBackground(Ui.pressable(Ui.floatingPanel(Ui.SURFACE_HI, Ui.ACCENT, 2, this)));
+        b.setBackground(Ui.pressable(Ui.box(Ui.SURFACE_HI, Ui.ACCENT, this)));
         Ui.elevate(b, this, Ui.FLOAT_ELEVATION_DP);
         Motion.draggable(b, Ui.dp(this, COVER_TOGGLE_MARGIN_DP), (tx, ty) -> {
             float[] travel = coverToggleTravel();
@@ -905,7 +906,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         if (theatre) dockShortcuts = shortcutBar.getParent() == inputDeck;
         setShortcutDocked(dockShortcuts);
         shortcutBar.setTwoRows(dockShortcuts);
-        shortcutBar.setEdges(true, true, true, true);
+        // Docked without the chassis, the deck runs flush to the app frame at the
+        // sides and sits right under the lid's separator: drawing those edges too
+        // would double the line. See ShortcutBar.edges.
+        boolean flush = dockShortcuts && !laptop;
+        shortcutBar.setEdges(!flush, !(flush && !deckFlip && controlsShown), !flush, true);
         shortcutBar.setVisibility(!showShortcuts || theatre && !dockShortcuts
                 || coverDisplay && !coverInputMode
                 ? View.GONE : View.VISIBLE);
@@ -942,13 +947,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         if (deck == null || lid == null || base == null || hinge == null) return;
         boolean currentlyFlipped = deck.indexOfChild(base) < deck.indexOfChild(lid);
         if (currentlyFlipped == deckFlip) return;
-        deck.removeAllViews();
+        // Move base and hinge around the lid; never detach the lid. It holds the
+        // SurfaceView, and detaching that destroys the video surface: the stream
+        // pauses and waits for a new keyframe, a black monitor for ~250 ms.
+        deck.removeView(base);
+        deck.removeView(hinge);
         if (deckFlip) {
-            deck.addView(base);
-            deck.addView(hinge);
-            deck.addView(lid);
+            deck.addView(base, 0);
+            deck.addView(hinge, 1);
         } else {
-            deck.addView(lid);
             deck.addView(hinge);
             deck.addView(base);
         }
@@ -990,6 +997,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         for (View v : new View[]{surfaceView, keyboard, trackpadDeck, shortcutBar}) {
             if (v == null) continue;
             v.animate().cancel();
+            Motion.stop(v);
             v.setTranslationX(0f);
             v.setTranslationY(0f);
             v.setScaleX(1f);
@@ -997,10 +1005,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         }
     }
 
+    /**
+     * FLIP on springs: each pane starts where it was on screen (mid-flight
+     * included, keeping its speed) and glides to its new place. Position only:
+     * scaling a pane would distort the keys and the desktop inside it.
+     */
     private void animateSwapTransition(int[][] beforeBounds) {
-        if (!ValueAnimator.areAnimatorsEnabled()) return;
         View[] panes = {surfaceView, keyboard, trackpadDeck, shortcutBar};
-        PathInterpolator spring = new PathInterpolator(0.16f, 1f, 0.30f, 1f);
         int[] loc = new int[2];
         for (int i = 0; i < panes.length; i++) {
             View v = panes[i];
@@ -1009,24 +1020,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 continue;
             }
             v.getLocationInWindow(loc);
-            float prevCx = prev[0] + prev[2] * 0.5f;
-            float prevCy = prev[1] + prev[3] * 0.5f;
-            float curCx = loc[0] - v.getTranslationX() + v.getWidth() * 0.5f;
-            float curCy = loc[1] - v.getTranslationY() + v.getHeight() * 0.5f;
-            float dx = prevCx - curCx;
-            float dy = prevCy - curCy;
-            float sx = Motion.clamp((float) prev[2] / v.getWidth(), 0.65f, 1.45f);
-            float sy = Motion.clamp((float) prev[3] / v.getHeight(), 0.65f, 1.45f);
-            if (Math.abs(dx) < 2f && Math.abs(dy) < 2f && Math.abs(sx - 1f) < 0.03f && Math.abs(sy - 1f) < 0.03f) {
+            float dx = prev[0] + prev[2] * 0.5f - (loc[0] - v.getTranslationX() + v.getWidth() * 0.5f);
+            float dy = prev[1] + prev[3] * 0.5f - (loc[1] - v.getTranslationY() + v.getHeight() * 0.5f);
+            if (Math.abs(dx) < 1f && Math.abs(dy) < 1f && !Motion.spring(v, View.TRANSLATION_X, Motion.SNAPPY).running()) {
                 continue;
             }
-            v.animate().cancel();
             v.setTranslationX(dx);
             v.setTranslationY(dy);
-            v.setScaleX(sx);
-            v.setScaleY(sy);
-            v.animate().translationX(0f).translationY(0f).scaleX(1f).scaleY(1f)
-                    .setDuration(280).setInterpolator(spring).start();
+            Motion.to(v, View.TRANSLATION_X, 0f, Motion.SNAPPY);
+            Motion.to(v, View.TRANSLATION_Y, 0f, Motion.SNAPPY);
         }
     }
 
@@ -1055,8 +1057,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 resizeStartState = new WorkspaceGeometry.ResizeState(
                         startMon, padScale, barScale, startPadH, wheelWidth, buttonHeight);
             }
-            @Override public void resizeCorner(int target, int corner, float dxPx, float dyPx,
-                                               float overlayW, float overlayH) {
+            @Override public float[] resizeCorner(int target, int corner, float dxPx, float dyPx,
+                                                  float overlayW, float overlayH) {
                 if (resizeStartState == null) beginResize();
                 float density = getResources().getDisplayMetrics().density;
                 float deckHeightDp = (lid.getHeight() + base.getHeight()) / density;
@@ -1064,10 +1066,21 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 if (target == ResizeOverlay.KEYBOARD && padHeight < 0 && trackpadDeck.isShown()) {
                     padHeight = resizeStartState.padHeight;
                 }
-                WorkspaceGeometry.ResizeState next = WorkspaceGeometry.resizeCorner(
-                        resizeStartState, target, corner, dxPx, dyPx, overlayW, overlayH,
+                WorkspaceGeometry.ResizeState start = resizeStartState;
+                boolean horizontal = inputDeck.trackpadHorizontal();
+                WorkspaceGeometry.Resize resize = (x, y) -> WorkspaceGeometry.resizeCorner(
+                        start, target, corner, x, y, overlayW, overlayH,
                         deckHeightDp, density, padHeightLimit, controlsShown, keyboardShown,
-                        inputDeck.trackpadHorizontal(), barBesideMonitor, shortcutDocked);
+                        horizontal, barBesideMonitor, shortcutDocked);
+                WorkspaceGeometry.ResizeState raw = resize.at(dxPx, dyPx);
+                WorkspaceGeometry.ResizeState next = WorkspaceGeometry.snap(start, raw,
+                        Prefs.trackpadSize(prefs));
+                // A light tick as a size clicks onto its magnet, once per catch.
+                boolean snapped = !WorkspaceGeometry.same(raw, next);
+                if (snapped && !resizeSnapped && resizeOverlay != null) {
+                    resizeOverlay.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK);
+                }
+                resizeSnapped = snapped;
                 monitorFraction = next.monitorFraction;
                 padScale = next.padScale;
                 barScale = next.barScale;
@@ -1078,9 +1091,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     resizeFramePending = true;
                     deck.postOnAnimation(resizeFrame);
                 }
+                return WorkspaceGeometry.overshoot(resize, dxPx, dyPx);
             }
-            @Override public void swap(int from, int to, float dropX, InputDeckLayout.Box toBox) {
-                clearSwapTransforms();
+            @Override public boolean swap(int from, int to, float dropX, InputDeckLayout.Box toBox) {
                 View[] panes = {surfaceView, keyboard, trackpadDeck, shortcutBar};
                 int[][] before = new int[panes.length][4];
                 int[] loc = new int[2];
@@ -1103,6 +1116,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                         deckFlip, padLeft, barFlip, padTop, curSplit);
                 WorkspaceGeometry.Arrangement next = WorkspaceGeometry.swap(
                         cur, from, to, sideBySide, dockShortcuts, dropX, toBox);
+                if (next.deckFlip == deckFlip && next.padLeft == padLeft && next.barFlip == barFlip
+                        && next.padTop == padTop && next.split == curSplit) return false;
                 deckFlip = next.deckFlip;
                 padLeft = next.padLeft;
                 barFlip = next.barFlip;
@@ -1112,10 +1127,18 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     splitOverride = false;
                 }
                 applyPosture(false);
-                deckStage.post(() -> {
-                    animateSwapTransition(before);
-                    if (resizeOverlay != null) resizeOverlay.refresh();
+                // After the new layout, before it is drawn: no frame shows panes
+                // jumped to their new places.
+                android.view.ViewTreeObserver tree = deckStage.getViewTreeObserver();
+                tree.addOnPreDrawListener(new android.view.ViewTreeObserver.OnPreDrawListener() {
+                    @Override public boolean onPreDraw() {
+                        deckStage.getViewTreeObserver().removeOnPreDrawListener(this);
+                        animateSwapTransition(before);
+                        if (resizeOverlay != null) resizeOverlay.refresh();
+                        return true;
+                    }
                 });
+                return true;
             }
             @Override public void change(int target, float fraction) {
                 if (target == ResizeOverlay.KEYBOARD && padHeight < 0 && trackpadDeck.isShown()) {
@@ -1169,7 +1192,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             @Override public void finish(boolean save) { finishResize(save); }
         });
         deckStage.addView(resizeOverlay, new FrameLayout.LayoutParams(-1, -1));
-        resizeOverlay.setElevation(Ui.dp(this, 16));
+        Ui.elevate(resizeOverlay, this, 16);
         inputDeck.setInputEnabled(false);
         trackpadDeck.setInputEnabled(false);
         deck.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
@@ -1257,8 +1280,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         base.setVisibility(View.VISIBLE);
 
         ValueAnimator resize = ValueAnimator.ofFloat(0f, 1f);
-        resize.setDuration(Motion.COVER_SWITCH_MS);
-        resize.setInterpolator(new PathInterpolator(0.18f, 0.88f, 0.22f, 1f));
+        resize.setDuration(Motion.millis(Motion.NAV));
+        resize.setInterpolator(Motion.curve(Motion.NAV));
         resize.addUpdateListener(a -> {
             float p = (float) a.getAnimatedValue();
             int lh = Math.round(startLid + (targetLid - startLid) * p);
@@ -1294,12 +1317,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             base.setScaleX(0.965f);
             base.setScaleY(0.965f);
             base.animate().alpha(1f).translationY(0f).scaleX(1f).scaleY(1f)
-                    .setDuration(Motion.COVER_SWITCH_MS)
-                    .setInterpolator(new OvershootInterpolator(Motion.COVER_OVERSHOOT)).start();
+                    .setDuration(Motion.millis(Motion.SNAPPY))
+                    .setInterpolator(Motion.curve(Motion.SNAPPY)).start();
         } else {
             base.animate().alpha(0f).translationY(Ui.dp(this, 44)).scaleX(0.985f).scaleY(0.985f)
-                    .setDuration(Motion.COVER_SWITCH_MS - 30)
-                    .setInterpolator(new PathInterpolator(0.4f, 0f, 1f, 1f)).start();
+                    .setDuration(Motion.millis(Motion.FADE))
+                    .setInterpolator(Motion.curve(Motion.FADE)).start();
         }
         resize.start();
     }
@@ -1323,10 +1346,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 .addTransition(new android.transition.ChangeBounds())
                 .addTransition(new android.transition.Fade(android.transition.Fade.IN))
                 .setOrdering(android.transition.TransitionSet.ORDERING_TOGETHER);
-        move.setDuration(Motion.THEATRE_MS);
-        move.setInterpolator(new PathInterpolator(0.2f, 0f, 0f, 1f));
+        move.setDuration(Motion.millis(Motion.NAV));
+        move.setInterpolator(Motion.curve(Motion.NAV));
         android.transition.TransitionManager.beginDelayedTransition(root, move);
-        int frame = on ? 0 : Ui.dp(this, 2);
+        int frame = on ? 0 : 2 * Ui.hair(this);
         root.setPadding(frame, frame, frame, frame);
         root.invalidate();
         videoPane.setBackgroundColor(on ? android.graphics.Color.BLACK : android.graphics.Color.TRANSPARENT);
@@ -1346,7 +1369,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         theatreToggle.setVisibility(resizeOverlay == null && !coverDisplay && screen == SCREEN_DECK
                 ? View.VISIBLE : View.GONE);
         // Over a film it stays findable but out of the way.
-        theatreToggle.animate().alpha(theatre ? 0.25f : 1f).setDuration(Motion.THEATRE_MS);
+        Motion.to(theatreToggle, View.ALPHA, theatre ? 0.25f : 1f, Motion.FADE);
         theatreToggle.setText(theatre ? ICON_EXIT_FULLSCREEN : ICON_FULLSCREEN);
         theatreToggle.setContentDescription(theatre ? "Exit full screen" : "Full screen");
         // A monitor-only cover preset has nothing to reveal.
@@ -1357,9 +1380,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         coverToggle.setText(expanded ? "□" : "⌨");
         coverToggle.setContentDescription(expanded
                 ? "Show full monitor" : "Show keyboard and trackpad");
-        coverToggle.animate().rotation(expanded ? -4f : 0f)
-                .setDuration(Motion.RELEASE_MS)
-                .setInterpolator(new OvershootInterpolator(Motion.COVER_OVERSHOOT)).start();
+        Motion.to(coverToggle, View.ROTATION, expanded ? -4f : 0f, Motion.RELEASE);
     }
 
     /**
@@ -1518,31 +1539,24 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         screen = which;
         View target = screenView(which), outgoing = screenView(previous);
         boolean animate = previous != which && !locked && outgoing != null
-                && outgoing.getVisibility() == View.VISIBLE;
+                && outgoing.getVisibility() == View.VISIBLE && root.getWidth() > 0;
         for (View v : new View[]{home, settingsView, addressView, shortcutsView}) {
-            if (v == null || v == target || animate && v == outgoing) continue;
-            v.animate().cancel();
-            v.setAlpha(1f);
+            // A repeat call for the same screen leaves a screen still leaving alone.
+            if (v == null || v == target || animate && v == outgoing
+                    || previous == which && Motion.moving(v)) continue;
+            settleScreen(v);
             v.setVisibility(View.GONE);
         }
-        target.animate().cancel();
         target.setVisibility(View.VISIBLE);
-        // Crossfade by fading whichever screen is on top, so the one underneath
-        // is opaque all the way through. The deck is the bottom of the stack:
-        // the live desktop shows only when it is where you are going or leaving.
-        if (!animate) {
-            target.setAlpha(1f);
-        } else if (root.indexOfChild(target) > root.indexOfChild(outgoing)) {
-            if (target.getAlpha() == 1f) target.setAlpha(0f);
-            Motion.fade(target, true, () -> conceal(outgoing));
-        } else {
-            target.setAlpha(1f);
-            Motion.fade(outgoing, false, () -> conceal(outgoing));
-        }
-        if (previous != which && !locked) {
-            if (target instanceof HomeView) ((HomeView) target).enterPage();
-            else if (target instanceof Panel) ((Panel) target).enterPage(
-                    which == SCREEN_SETTINGS && previous == SCREEN_SHORTCUTS);
+        if (animate) {
+            navigate(target, outgoing);
+        } else if (previous != which) {
+            settleScreen(target);
+            if (!locked) {
+                if (target instanceof HomeView) ((HomeView) target).enterPage();
+                else if (target instanceof Panel) ((Panel) target).enterPage(
+                        which == SCREEN_SETTINGS && previous == SCREEN_SHORTCUTS);
+            }
         }
         root.invalidate();
         updateCoverToggle();
@@ -1561,7 +1575,58 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private void conceal(View v) {
         if (v == deckStage || v == screenView(screen)) return;
         v.setVisibility(View.GONE);
+        settleScreen(v);
+    }
+
+    private static void settleScreen(View v) {
+        if (v == null) return;
+        v.animate().cancel();
+        Motion.stop(v);
         v.setAlpha(1f);
+        v.setTranslationX(0f);
+        v.setScaleX(1f);
+        v.setScaleY(1f);
+        Motion.Dim.PROPERTY.set(v, 0f);
+    }
+
+    /**
+     * Screens move like iOS navigation. Going deeper, the new screen slides in
+     * over the old, which drifts back a third and dims; going back reverses it.
+     * Home over the desktop zooms instead, like leaving and entering an app.
+     * The deck itself never moves. Whatever is on top stays opaque all the way,
+     * so the live desktop shows only when it is where you are going or leaving.
+     * Every part is a spring: tap Back mid-slide and it turns around smoothly.
+     */
+    private void navigate(View target, View outgoing) {
+        boolean push = root.indexOfChild(target) > root.indexOfChild(outgoing);
+        View top = push ? target : outgoing, under = push ? outgoing : target;
+        if (top == home && under == deckStage) {
+            float far = 1.06f;
+            if (push && !Motion.spring(home, View.ALPHA, Motion.FADE).running()) {
+                home.setAlpha(0f);
+                home.setScaleX(far);
+                home.setScaleY(far);
+            }
+            float scale = push ? 1f : far;
+            Motion.to(home, View.SCALE_X, scale, Motion.NAV);
+            Motion.to(home, View.SCALE_Y, scale, Motion.NAV);
+            Motion.to(home, View.ALPHA, push ? 1f : 0f, Motion.FADE, push ? null : () -> conceal(home));
+            return;
+        }
+        float width = root.getWidth(), drift = -width * 0.3f;
+        boolean moving = Motion.spring(top, View.TRANSLATION_X, Motion.NAV).running();
+        if (push && !moving) top.setTranslationX(width);
+        top.setAlpha(1f);
+        Motion.to(top, View.TRANSLATION_X, push ? 0f : width, Motion.NAV,
+                () -> conceal(push ? under : top));
+        if (under == deckStage) return;
+        if (!push && !Motion.spring(under, View.TRANSLATION_X, Motion.NAV).running()) {
+            under.setTranslationX(drift);
+            Motion.Dim.PROPERTY.set(under, 0.3f);
+        }
+        under.setAlpha(1f);
+        Motion.to(under, View.TRANSLATION_X, push ? drift : 0f, Motion.NAV);
+        Motion.to(under, Motion.Dim.PROPERTY, push ? 0.3f : 0f, Motion.NAV);
     }
 
     private void showSettings() {
@@ -1980,9 +2045,21 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         pauseStream();
     }
 
+    /**
+     * The biometric prompt takes window focus without telling us: neither losing it
+     * nor getting it back reaches onWindowFocusChanged, and unlock runs while the
+     * prompt still holds it. So clipboard sync would stay off after a fingerprint
+     * unlock. Re-check until the window really has focus (100 ms steps, 2 s cap).
+     */
+    private void focusSharingAfterUnlock(int tries) {
+        if (locked || sharing == null) return;
+        if (hasWindowFocus()) sharing.focus(true);
+        else if (tries > 0) getWindow().getDecorView().postDelayed(() -> focusSharingAfterUnlock(tries - 1), 100);
+    }
+
     private void onUnlocked() {
         locked = false;
-        if (sharing != null) sharing.focus(hasWindowFocus());
+        focusSharingAfterUnlock(20);
         LockOverlay leaving = lockOverlay;
         Motion.fade(leaving, false, () -> {
             leaving.setVisibility(View.GONE);

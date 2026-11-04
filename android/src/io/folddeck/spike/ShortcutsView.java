@@ -101,7 +101,7 @@ class ShortcutsView extends Panel {
             view = new LinearLayout(c);
             view.setOrientation(LinearLayout.VERTICAL);
             view.setPadding(Ui.dp(c, 10), Ui.dp(c, 10), Ui.dp(c, 10), Ui.dp(c, 10));
-            view.setBackground(Ui.rounded(Ui.SURFACE, Ui.SEPARATOR, 16, c));
+            view.setBackground(Ui.box(Ui.SURFACE, Ui.LINE, c));
 
             LinearLayout line = new LinearLayout(c);
             line.setOrientation(LinearLayout.HORIZONTAL);
@@ -142,8 +142,8 @@ class ShortcutsView extends Panel {
                     String problem = problem(e.toString());
                     warning.setText(problem == null ? "" : problem);
                     warning.setVisibility(problem == null ? GONE : VISIBLE);
-                    chord.setBackground(Ui.rounded(Ui.SURFACE_HI,
-                            problem == null ? Ui.LINE : Ui.WARN, 12, c));
+                    chord.setBackground(Ui.box(Ui.SURFACE_HI,
+                            problem == null ? Ui.LINE : Ui.WARN, c));
                 }
             });
         }

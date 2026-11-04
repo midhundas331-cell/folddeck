@@ -279,4 +279,66 @@ final class WorkspaceGeometry {
         }
         return new ResizeState(monitorFraction, padScale, barScale, padHeight, wheelWidth, buttonHeight);
     }
+
+    /** One corner resize as a function of the finger's offset. */
+    interface Resize {
+        ResizeState at(float dxPx, float dyPx);
+    }
+
+    static boolean same(ResizeState a, ResizeState b) {
+        return near(a.monitorFraction, b.monitorFraction) && near(a.padScale, b.padScale)
+                && near(a.barScale, b.barScale) && near(a.padHeight, b.padHeight)
+                && near(a.wheelWidth, b.wheelWidth) && near(a.buttonHeight, b.buttonHeight);
+    }
+
+    private static boolean near(float a, float b) {
+        return Math.abs(a - b) <= 1e-4f * Math.max(1f, Math.abs(a));
+    }
+
+    /**
+     * How far, in px along x and y, the finger has pulled past the point where
+     * the resize stopped answering: a size limit, or an axis this pane cannot
+     * grow along. The overlay stretches its frame by this, with resistance.
+     * Each value is a clamped straight line in the offset, so once a pull stops
+     * changing anything it never starts again further out: bisect for it.
+     */
+    static float[] overshoot(Resize resize, float dxPx, float dyPx) {
+        ResizeState at = resize.at(dxPx, dyPx);
+        return new float[]{stall(resize, at, dxPx, dyPx, true), stall(resize, at, dxPx, dyPx, false)};
+    }
+
+    private static float stall(Resize resize, ResizeState at, float dx, float dy, boolean xAxis) {
+        float d = xAxis ? dx : dy;
+        if (Math.abs(d) < 0.5f) return 0f;
+        float lo = 0f, hi = 1f;   // the share of d at which nothing changes any more
+        if (same(at, xAxis ? resize.at(0f, dy) : resize.at(dx, 0f))) {
+            hi = 0f;
+        } else {
+            for (int i = 0; i < 14 && (hi - lo) * Math.abs(d) > 0.5f; i++) {
+                float mid = (lo + hi) * 0.5f;
+                if (same(at, xAxis ? resize.at(dx * mid, dy) : resize.at(dx, dy * mid))) hi = mid;
+                else lo = mid;
+            }
+        }
+        return d * (1f - hi);
+    }
+
+    /**
+     * Magnetic sizes: a value being dragged that comes near its default (or an
+     * even monitor/deck split) sticks there. Values the drag is not changing are
+     * left alone, so an untouched pane never jumps.
+     */
+    static ResizeState snap(ResizeState start, ResizeState next, float defaultPadScale) {
+        return new ResizeState(
+                pull(start.monitorFraction, next.monitorFraction, 0.5f, 0.018f),
+                pull(start.padScale, next.padScale, defaultPadScale, 0.035f),
+                pull(start.barScale, next.barScale, 1f, 0.04f),
+                next.padHeight,
+                pull(start.wheelWidth, next.wheelWidth, 28f, 1.5f),
+                pull(start.buttonHeight, next.buttonHeight, 40f, 2f));
+    }
+
+    private static float pull(float start, float value, float to, float radius) {
+        return value != start && value >= 0f && Math.abs(value - to) < radius ? to : value;
+    }
 }

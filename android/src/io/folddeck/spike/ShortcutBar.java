@@ -53,7 +53,7 @@ class ShortcutBar extends FrameLayout {
     /** Row deck height bounds; the narrowest side band worth a column; the width
      *  below which the column goes single and small; all in dp. */
     static final int ROW_MIN_DP = 52, ROW_MAX_DP = 72, COLUMN_MIN_DP = 48, COMPACT_BELOW_DP = 176;
-    private static final int CELL_MIN_W_DP = 104, CELL_MIN_H_DP = 52, BORDER_DP = 1;
+    private static final int CELL_MIN_W_DP = 104, CELL_MIN_H_DP = 52;
 
     private final Listener listener;
     private final HorizontalScrollView row;
@@ -64,8 +64,8 @@ class ShortcutBar extends FrameLayout {
     private List<Shortcuts.Item> items;
     private TextView modeCell;
     private boolean vertical, compact, trackpad, twoRows;
-    /** Which sides get the accent border: left, top, right, bottom. A side against
-     *  the app frame is left open, or the two 2dp lines would read as one fat one. */
+    /** Which sides get the hairline border: left, top, right, bottom. A side against
+     *  the app frame is left open, or the hairline and the frame would read as one fat line. */
     private final boolean[] edges = {true, true, true, true};
 
     ShortcutBar(Context c, Listener listener) {
@@ -90,7 +90,7 @@ class ShortcutBar extends FrameLayout {
         tools.setGravity(Gravity.CENTER);
         addView(tools);
         styleTools();
-        setBackground(Ui.floatingPanel(Ui.SURFACE, Ui.SEPARATOR, 0.5f, c));
+        setBackground(Ui.square(Ui.SURFACE));   // edges are drawn per side in dispatchDraw
         applyEdges();
         attachGrid();
     }
@@ -161,7 +161,7 @@ class ShortcutBar extends FrameLayout {
     /** Recreate the buttons, e.g. after a theme change: they bake colours in. */
     void rebuild() {
         if (items == null) return;
-        setBackground(Ui.floatingPanel(Ui.SURFACE, Ui.SEPARATOR, 0.5f, getContext()));
+        setBackground(Ui.square(Ui.SURFACE));   // edges are drawn per side in dispatchDraw
         styleTools();
         // Kept across the rebuild, so a theme change does not throw the deck back.
         final int sx = row.getScrollX(), sy = column.getScrollY();
@@ -211,8 +211,9 @@ class ShortcutBar extends FrameLayout {
     private void styleTools() {
         if (tools == null) return;
         tools.removeAllViews();
-        tools.setBackground(Ui.rounded(Ui.mix(Ui.SURFACE, Ui.ACCENT, 0.06f),
-                Ui.mix(Ui.LINE, Ui.ACCENT, 0.2f), 9, getContext()));
+        // Fill only: the strip spans the deck, so a rim would double the app
+        // frame at the sides and the separator above it.
+        tools.setBackground(Ui.square(Ui.SURFACE));
         tools.addView(tool("↔", "Resize", "Resize workspace", listener::onResize));
         tools.addView(tool("", "App", "Folddeck app settings", listener::onAppSettings));
     }
@@ -234,8 +235,8 @@ class ShortcutBar extends FrameLayout {
         button.addView(text);
         button.setContentDescription(description);
         button.setFocusable(true);
-        button.setBackground(Ui.pressable(Ui.rounded(android.graphics.Color.TRANSPARENT,
-                android.graphics.Color.TRANSPARENT, 8, c)));
+        button.setBackground(Ui.pressable(Ui.box(android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT, c)));
         button.setOnClickListener(v -> action.run());
         Motion.press(button);
         return button;
@@ -286,7 +287,7 @@ class ShortcutBar extends FrameLayout {
         int pad = Ui.dp(c, compact ? 3 : 10);
         t.setPadding(pad, 0, pad, 0);
         // The same keycap as the keyboard and trackpad buttons: one deck, one look.
-        t.setBackground(Ui.pressable(Ui.rounded(Ui.SURFACE_HI, Ui.SEPARATOR, 8, c)));
+        t.setBackground(Ui.pressable(Ui.box(Ui.SURFACE_HI, Ui.LINE, c)));
         Motion.press(t);
         t.setOnClickListener(onClick);
         return t;
@@ -299,15 +300,15 @@ class ShortcutBar extends FrameLayout {
         modeCell.setTypeface(Ui.MONO_BOLD);
         modeCell.setTextColor(trackpad ? Ui.ACCENT : Ui.TEXT_DIM);
         modeCell.setContentDescription("Screen touch mode: " + (trackpad ? "trackpad" : "direct"));
-        modeCell.setBackground(Ui.pressable(Ui.rounded(trackpad ? Ui.SELECTED : Ui.SURFACE_HI,
-                trackpad ? Ui.ACCENT : Ui.LINE, 8, getContext())));
+        modeCell.setBackground(Ui.pressable(Ui.box(trackpad ? Ui.SELECTED : Ui.SURFACE_HI,
+                trackpad ? Ui.ACCENT : Ui.LINE, getContext())));
     }
 
     @Override
     protected void dispatchDraw(Canvas canvas) {
         super.dispatchDraw(canvas);
-        int w = Ui.dp(getContext(), BORDER_DP), W = getWidth(), H = getHeight();
-        border.setColor(Ui.mix(Ui.BG, Ui.ACCENT, 0.30f));
+        int w = Ui.hair(getContext()), W = getWidth(), H = getHeight();
+        border.setColor(Ui.LINE);
         if (edges[0]) canvas.drawRect(0, 0, w, H, border);
         if (edges[1]) canvas.drawRect(0, 0, W, w, border);
         if (edges[2]) canvas.drawRect(W - w, 0, W, H, border);
@@ -409,9 +410,8 @@ class ShortcutBar extends FrameLayout {
                         && placed && (oldX != x || oldY != y)) {
                     v.setTranslationX(v.getTranslationX() + oldX - x);
                     v.setTranslationY(v.getTranslationY() + oldY - y);
-                    v.animate().translationX(0).translationY(0).scaleX(1).scaleY(1)
-                            .setDuration(220).setInterpolator(new android.view.animation.PathInterpolator(
-                                    0.16f, 1f, 0.3f, 1f)).start();
+                    Motion.to(v, View.TRANSLATION_X, 0f, Motion.SNAPPY);
+                    Motion.to(v, View.TRANSLATION_Y, 0f, Motion.SNAPPY);
                 }
             }
             animateNext = false;

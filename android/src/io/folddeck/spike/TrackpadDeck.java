@@ -84,7 +84,7 @@ final class TrackpadDeck extends View {
         density = getResources().getDisplayMetrics().density;
         touchSlop = android.view.ViewConfiguration.get(context).getScaledTouchSlop();
         stroke.setStyle(Paint.Style.STROKE);
-        stroke.setStrokeWidth(Math.max(1f, density));
+        stroke.setStrokeWidth(Ui.hair(density));
         text.setTypeface(Ui.MONO_BOLD);
         text.setTextAlign(Paint.Align.CENTER);
         ridge.setStrokeCap(Paint.Cap.ROUND);
@@ -158,8 +158,7 @@ final class TrackpadDeck extends View {
         // the same frame the keyboard and shortcut deck wear.
         layoutZones(w - 2 * inset, h - 2 * inset);
         for (RectF r : new RectF[]{pad, scroll, left, right}) r.offset(inset, inset);
-        float d = Ui.CAP_DEPTH_DP * density;
-        wheel.set(scroll.left + Ui.dp(getContext(), 5), scroll.top + Ui.dp(getContext(), 7) + d,
+        wheel.set(scroll.left + Ui.dp(getContext(), 5), scroll.top + Ui.dp(getContext(), 7),
                 scroll.right - Ui.dp(getContext(), 5), scroll.bottom - Ui.dp(getContext(), 7));
         shadeDrum();
     }
@@ -207,7 +206,7 @@ final class TrackpadDeck extends View {
         // while a finger is on it.
         if (!wheelOnly) {
             Ui.drawCap(canvas, pad.left, pad.top, pad.right, pad.bottom, Ui.SURFACE,
-                    motionPointer != -1 ? Ui.ACCENT : Ui.LINE, true, density, fill);
+                    motionPointer != -1 ? Ui.ACCENT : Ui.LINE, density, fill);
             text.setTextSize(Ui.dp(getContext(), 10));
             text.setColor(Ui.TEXT_FAINT);
             canvas.drawText("TRACKPAD", pad.centerX(), pad.top + Ui.dp(getContext(), 20), text);
@@ -233,23 +232,22 @@ final class TrackpadDeck extends View {
         canvas.save();
         canvas.scale(s, s, box.centerX(), box.centerY());
         Ui.drawCap(canvas, box.left, box.top, box.right, box.bottom,
-                down ? Ui.ACCENT : Ui.SURFACE_HI, down ? Ui.ACCENT : Ui.LINE, down, density, fill);
+                down ? Ui.PRESSED : Ui.SURFACE_HI, down ? Ui.ACCENT : Ui.LINE, density, fill);
         text.setTextSize(Ui.dp(getContext(), 11));
-        text.setColor(down ? Ui.onAccent() : Ui.TEXT_DIM);
-        float sink = down ? Ui.CAP_DEPTH_DP * density / 2 : -Ui.CAP_DEPTH_DP * density / 2;
+        text.setColor(down ? Ui.TEXT : Ui.TEXT_DIM);
         float divider = box.right - Math.min(box.width() * 0.44f, 52f * density);
         float labelWidth = text.measureText(label);
         if (labelWidth > divider - box.left - 4 * density)
             text.setTextSize(text.getTextSize() * Math.max(1, divider - box.left - 4 * density) / labelWidth);
         canvas.drawText(label, (box.left + divider) / 2,
-                box.centerY() + sink - (text.ascent() + text.descent()) / 2f, text);
+                box.centerY() - (text.ascent() + text.descent()) / 2f, text);
         int button = TrackpadState.buttonForVisual(visual, leftHanded);
-        fill.setColor(state.latched(button) ? Ui.onAccent() : Ui.ACCENT);
+        fill.setColor(state.latched(button) ? Ui.TEXT : Ui.ACCENT);
         fill.setAlpha(60);
         canvas.drawRect(divider, box.top + 5 * density, divider + density, box.bottom - 5 * density, fill);
         text.setTextSize(Math.min(9f * density, box.width() * 0.09f));
         canvas.drawText(state.latched(button) ? "HELD" : "HOLD", (divider + box.right) / 2,
-                box.centerY() + sink - (text.ascent() + text.descent()) / 2f, text);
+                box.centerY() - (text.ascent() + text.descent()) / 2f, text);
         fill.setAlpha(255);
         canvas.restore();
     }
@@ -263,7 +261,7 @@ final class TrackpadDeck extends View {
     private void drawWheel(Canvas canvas) {
         boolean active = wheelPointer != -1 || flingV != 0f;
         Ui.drawCap(canvas, scroll.left, scroll.top, scroll.right, scroll.bottom,
-                Ui.mix(Ui.BG, Ui.SURFACE, 0.5f), active ? Ui.ACCENT : Ui.LINE, true, density, fill);
+                Ui.mix(Ui.BG, Ui.SURFACE, 0.5f), active ? Ui.ACCENT : Ui.LINE, density, fill);
         if (wheel.isEmpty()) return;
 
         float r = wheel.height() / 2f, cy = wheel.centerY();

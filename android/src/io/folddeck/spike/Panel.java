@@ -30,11 +30,11 @@ class Panel extends FrameLayout {
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.setPadding(Ui.dp(c, 16), 0, Ui.dp(c, 24), 0);
-        header.setBackground(Ui.floatingPanel(Ui.SURFACE, android.graphics.Color.TRANSPARENT, 0, c));
+        header.setBackground(Ui.box(Ui.SURFACE, android.graphics.Color.TRANSPARENT, c));
 
         TextView back = Ui.text(c, "‹", 34f, Ui.TEXT);
         back.setGravity(Gravity.CENTER);
-        back.setBackground(Ui.pressable(Ui.rounded(Ui.SURFACE, Ui.SEPARATOR, 14, c)));
+        back.setBackground(Ui.pressable(Ui.box(Ui.SURFACE, Ui.LINE, c)));
         back.setContentDescription("Back");
         back.setClickable(true);
         Motion.press(back);

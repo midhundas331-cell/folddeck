@@ -56,8 +56,6 @@ class SettingsView extends Panel {
         menu = new LinearLayout(c);
         menu.setOrientation(LinearLayout.VERTICAL);
         frame.addView(menu);
-        menu.addView(Ui.menuHeading(c, "Designed around you."));
-        menu.addView(Ui.menuNote(c, "Fine-tune your workspace, from the first tap to the last keystroke."));
 
         // -------- the laptop -------------------------------------------------- //
         cardAddress = Ui.text(c, "", Ui.T_LABEL, Ui.TEXT_FAINT);
@@ -67,7 +65,7 @@ class SettingsView extends Panel {
         ((LinearLayout) laptop.getChildAt(1)).addView(build);
         cardAddress.setTypeface(Ui.MONO);
         build.setTypeface(Ui.MONO);
-        laptop.setBackground(Ui.floatingPanel(Ui.SURFACE, Ui.LINE, 0.5f, c));
+        laptop.setBackground(Ui.box(Ui.SURFACE, Ui.LINE, c));
         menu.addView(laptop);
 
         // -------- categories ------------------------------------------------- //
@@ -280,7 +278,7 @@ class SettingsView extends Panel {
 
     private View category(String icon, String title, LinearLayout page) {
         LinearLayout row = Ui.menuItem(c, icon, title, () -> open(page));
-        row.setBackground(Ui.pressable(Ui.rounded(Ui.SURFACE, Ui.SEPARATOR, 14, c)));
+        row.setBackground(Ui.pressable(Ui.box(Ui.SURFACE, Ui.LINE, c)));
         row.setLayoutParams(Ui.fillW(c, 6));
         return row;
     }
@@ -315,7 +313,7 @@ class SettingsView extends Panel {
         if (header != null) wrap.addView(Ui.menuSection(c, header));
         LinearLayout card = new LinearLayout(c);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackground(Ui.rounded(Ui.SURFACE, Ui.SEPARATOR, 16, c));
+        card.setBackground(Ui.box(Ui.SURFACE, Ui.LINE, c));
         wrap.addView(card, Ui.fillW(c, 8));
         for (View row : rows) {
             if (card.getChildCount() > 0) card.addView(Ui.divider(c));

@@ -54,7 +54,7 @@ class HomeView extends FrameLayout {
 
         LinearLayout card = new LinearLayout(c);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackground(Ui.floatingPanel(Ui.SURFACE, Ui.mix(Ui.LINE, Ui.ACCENT, 0.25f), 1, c));
+        card.setBackground(Ui.box(Ui.SURFACE, Ui.LINE, c));
         Ui.elevate(card, c, Ui.FLOAT_MID_DP);
         card.setPadding(Ui.dp(c, 14), Ui.dp(c, 8), Ui.dp(c, 14), Ui.dp(c, 14));
 

@@ -193,6 +193,27 @@ public class InputDeckLayoutCheck {
                 init, WorkspaceGeometry.KEYBOARD, WorkspaceGeometry.BAR, false, true, 350f, panes[WorkspaceGeometry.BAR]);
         check(kbBarShelf.padTop, "Keyboard <-> Bar in portrait shelf swaps vertical shelf order");
 
+        // Rubber-band: the overshoot is how far the finger went past the wheel's 64dp limit.
+        WorkspaceGeometry.ResizeState wheel = new WorkspaceGeometry.ResizeState(
+                0.55f, 1f, 1f, 220f, 60f, 40f);
+        WorkspaceGeometry.Resize pull = (x, y) -> WorkspaceGeometry.resizeCorner(
+                wheel, WorkspaceGeometry.WHEEL, WorkspaceGeometry.CORNER_BR, x, y,
+                1000f, 900f, 900f, 1f, 500f, true, true, true, true, false);
+        float[] over = WorkspaceGeometry.overshoot(pull, 30f, 0f);
+        check(Math.abs(over[0] - 26f) < 1f && over[1] == 0f, "overshoot past the limit: " + over[0]);
+        check(WorkspaceGeometry.overshoot(pull, 3f, 0f)[0] == 0f, "inside the limit nothing overshoots");
+        check(Math.abs(WorkspaceGeometry.overshoot(pull, 0f, 25f)[1] - 25f) < 1f,
+                "an axis the wheel cannot grow along is all overshoot");
+
+        // Magnets: the dragged value sticks to its default; untouched values never move.
+        WorkspaceGeometry.ResizeState near = new WorkspaceGeometry.ResizeState(
+                0.51f, 1.02f, 0.97f, 220f, 29f, 40f);
+        WorkspaceGeometry.ResizeState snapped = WorkspaceGeometry.snap(start, near, 1f);
+        check(snapped.monitorFraction == 0.5f && snapped.padScale == 1f && snapped.barScale == 1f
+                && snapped.wheelWidth == 28f, "dragged values snap to defaults");
+        WorkspaceGeometry.ResizeState still = WorkspaceGeometry.snap(near, near, 1f);
+        check(WorkspaceGeometry.same(still, near), "values the drag did not change never snap");
+
         System.out.println("InputDeckLayoutCheck ok");
     }
 }
