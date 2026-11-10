@@ -169,6 +169,13 @@ class SettingsView extends Panel {
                 slider("Pointing Stick Speed", Prefs.trackpointSens(prefs),
                         Prefs.TRACKPOINT_SENS_MIN, Prefs.TRACKPOINT_SENS_MAX, true,
                         v -> prefs.edit().putFloat(Prefs.TRACKPOINT_SENS, v).apply())));
+        keyboard.addView(group("Smart Typing",
+                "Smart Key Targets sends a tap near the edge of a key to the likelier "
+                        + "letter; the middle of a key is always that key. Turn it off if "
+                        + "passwords or commands come out wrong. Word Suggestions adds a row "
+                        + "of words above the keys.",
+                control("Smart Key Targets", Prefs.smartKeys(prefs), Prefs.SMART_KEYS),
+                control("Word Suggestions", Prefs.wordSuggestions(prefs), Prefs.WORD_SUGGESTIONS)));
         keyboard.addView(group(null,
                 "Hides this keyboard while a Bluetooth or USB keyboard is connected.",
                 control("Haptic Feedback", Prefs.keyboardHaptics(prefs), Prefs.KEYBOARD_HAPTICS),
@@ -263,7 +270,7 @@ class SettingsView extends Panel {
     // ------------------------------------------------------------------ //
     private void saveSize(String key, String override, float value) {
         SharedPreferences.Editor edit = prefs.edit().putFloat(key, value);
-        for (int p = 0; p < Prefs.LAYOUT_KEYS.length; p++) edit.remove(override + p);
+        Prefs.clearSize(edit, override);
         edit.apply();
     }
 

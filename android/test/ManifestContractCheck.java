@@ -22,8 +22,8 @@ public class ManifestContractCheck {
         }
         check(manifest.matches("(?s).*<service[^>]*android:name=\".SharingService\"[^>]*"
                 + "android:foregroundServiceType=\"microphone\\|camera\".*"), "sharing service is microphone|camera");
-        check(manifest.contains("android:versionCode=\"29\"") && manifest.contains("android:versionName=\"0.15.0\""),
-                "version 29 / 0.15.0");
+        check(manifest.contains("android:versionCode=\"35\"") && manifest.contains("android:versionName=\"0.19.1\""),
+                "version 35 / 0.19.1");
         System.out.println("ManifestContractCheck ok");
     }
 }

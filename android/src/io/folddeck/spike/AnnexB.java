@@ -27,6 +27,8 @@ final class AnnexB {
     private final Sink sink;
     private byte[] buf = new byte[1 << 20];
     private int len;
+    /** Bytes of the unfinished NAL already searched for a start code. */
+    private int resume;
 
     AnnexB(Sink sink) {
         this.sink = sink;
@@ -46,6 +48,7 @@ final class AnnexB {
 
     void reset() {
         len = 0;
+        resume = 0;
     }
 
     static int grownCapacity(int current, int needed) {
@@ -69,12 +72,17 @@ final class AnnexB {
     private void drain() {
         int cursor = findStartCode(0);
         if (cursor < 0) return;
+        // A big frame arrives over many reads; search only the new bytes, not
+        // the whole partial NAL again each time.
+        int from = resume;
+        resume = 0;
 
         while (true) {
             int payloadStart = cursor + 3;
             if (payloadStart < len && (buf[payloadStart] & 0x1F) == 9) {
                 if (payloadStart + 2 > len) break;   // the AUD's one payload byte
                 sink.unitEnd();
+                from = 0;
                 int next = findStartCode(payloadStart + 2);
                 if (next < 0) {
                     cursor = payloadStart + 2;
@@ -84,8 +92,12 @@ final class AnnexB {
                 continue;
             }
 
-            int next = findStartCode(payloadStart);
-            if (next < 0) break;
+            int next = findStartCode(Math.max(payloadStart, from));
+            from = 0;
+            if (next < 0) {
+                resume = Math.max(len - 2 - cursor, 0);
+                break;
+            }
 
             // A 4-byte start code is 00 00 00 01; the extra zero belongs to the
             // start code, not to the NAL that precedes it.

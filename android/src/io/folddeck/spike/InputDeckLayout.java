@@ -144,8 +144,10 @@ final class InputDeckLayout extends ViewGroup {
     }
 
     /** Width of the trackpad channel in a split board. */
+    static final float SPLIT_CHANNEL = 0.19f;
+
     static int splitChannel(int keyboardWidth, float padScale, float density) {
-        int want = Math.round(keyboardWidth * 0.19f * padScale);
+        int want = Math.round(keyboardWidth * SPLIT_CHANNEL * padScale);
         return clamp(want, Math.round(120f * density), Math.round(keyboardWidth * 0.34f));
     }
 

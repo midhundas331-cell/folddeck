@@ -42,6 +42,7 @@ final class Prefs {
     static final String TRACKPAD_LEFT_HANDED = "trackpad_left_handed";
     static final String NATURAL_SCROLL = "natural_scroll";
     static final String KEYBOARD_HAPTICS = "keyboard_haptics";
+    static final String SMART_KEYS = "smart_keys", WORD_SUGGESTIONS = "word_suggestions";
     static final String MOUSE_AUTO_CAPTURE = "mouse_auto_capture";
     static final String POINTER_MODE = "pointer_mode";
     static final String TRACKPAD_SENS = "trackpad_sens";
@@ -84,11 +85,50 @@ final class Prefs {
     static final String RESIZE_DECK_FLIP = "resize_deck_flip_",
             RESIZE_PAD_LEFT = "resize_pad_left_",
             RESIZE_BAR_FLIP = "resize_bar_flip_",
+            RESIZE_BAR_BESIDE = "resize_bar_beside_",
+            RESIZE_PAD_LID = "resize_pad_lid_",
             RESIZE_PAD_TOP = "resize_pad_top_";
 
-    static float resize(SharedPreferences p, String key, int posture, float fallback) {
-        float value = p.getFloat(key + posture, fallback);
+    /** Sizes belong to a posture and a preset: tuning Split must not reshape Both. */
+    static final String[] RESIZE_SIZES = {RESIZE_MONITOR, RESIZE_PAD, RESIZE_BAR,
+            RESIZE_HEIGHT, RESIZE_WHEEL, RESIZE_BUTTONS};
+
+    static String sizeKey(String key, int posture, int preset) {
+        return key + posture + "_" + preset;
+    }
+
+    static float resize(SharedPreferences p, String key, int posture, int preset, float fallback) {
+        float value = p.getFloat(sizeKey(key, posture, preset), fallback);
         return Float.isFinite(value) ? value : fallback;
+    }
+
+    /**
+     * Sizes used to be per posture only. Each one moves to the preset that
+     * posture has selected, which is the one it was last tuned in; the other
+     * presets start from their defaults.
+     */
+    static void migrateSizes(SharedPreferences p) {
+        SharedPreferences.Editor ed = null;
+        for (int posture = 0; posture < LAYOUT_KEYS.length; posture++) {
+            for (String key : RESIZE_SIZES) {
+                if (!p.contains(key + posture)) continue;
+                if (ed == null) ed = p.edit();
+                String to = sizeKey(key, posture, layout(p, posture));
+                if (!p.contains(to)) ed.putFloat(to, p.getFloat(key + posture, -1f));
+                ed.remove(key + posture);
+            }
+        }
+        if (ed != null) ed.apply();
+    }
+
+    /** Settings sets a size for everywhere: drop every studio override of it. */
+    static void clearSize(SharedPreferences.Editor ed, String key) {
+        for (int posture = 0; posture < LAYOUT_KEYS.length; posture++) {
+            ed.remove(key + posture);
+            for (int preset = LAYOUT_BOTH; preset <= LAYOUT_SPLIT; preset++) {
+                ed.remove(sizeKey(key, posture, preset));
+            }
+        }
     }
 
     static boolean resizeFlag(SharedPreferences p, String key, int posture, boolean fallback) {
@@ -136,6 +176,16 @@ final class Prefs {
 
     static boolean laptopLayout(SharedPreferences p) {
         return p.getBoolean(LAPTOP_LAYOUT, true);
+    }
+
+    /** Edge taps lean towards the likelier letter. */
+    static boolean smartKeys(SharedPreferences p) {
+        return p.getBoolean(SMART_KEYS, true);
+    }
+
+    /** A strip of suggested words above the keys. */
+    static boolean wordSuggestions(SharedPreferences p) {
+        return p.getBoolean(WORD_SUGGESTIONS, false);
     }
 
     static boolean showHud(SharedPreferences p) {

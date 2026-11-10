@@ -146,37 +146,64 @@ public class InputDeckLayoutCheck {
         check(WorkspaceGeometry.hitTarget(panes, 850, 680) == WorkspaceGeometry.TRACKPAD, "hit trackpad body");
         check(WorkspaceGeometry.hitTarget(panes, 120, 250) == WorkspaceGeometry.BAR, "hit bar body");
 
-        int[][] expectedCorners = {
-                {264, 4, WorkspaceGeometry.CORNER_TL},
-                {996, 4, WorkspaceGeometry.CORNER_TR},
-                {264, 496, WorkspaceGeometry.CORNER_BL},
-                {996, 496, WorkspaceGeometry.CORNER_BR}
-        };
-        for (int[] c : expectedCorners) {
-            int hit = WorkspaceGeometry.hitCorner(panes, WorkspaceGeometry.MONITOR, c[0], c[1], 38f, 20f);
-            check((hit >> 4) == WorkspaceGeometry.MONITOR && (hit & 0xF) == c[2],
-                    "monitor corner hit " + c[2]);
-        }
-        check(WorkspaceGeometry.hitCorner(panes, WorkspaceGeometry.MONITOR, 500, 250, 38f, 20f) == -1,
-                "pane center does not trigger corner handle");
+        // Dividers: the line sits on P's side facing Q, and dragging it away from P grows P.
+        InputDeckLayout.Box lid = new InputDeckLayout.Box(0, 0, 1000, 500);
+        InputDeckLayout.Box base = new InputDeckLayout.Box(0, 522, 1000, 400);
+        WorkspaceGeometry.Edge mon = WorkspaceGeometry.between(WorkspaceGeometry.MONITOR, lid, base, 30f);
+        check(!mon.vertical() && mon.side == WorkspaceGeometry.BOTTOM && mon.pos == 500f,
+                "lid above base: a horizontal divider on the lid's bottom");
+        check(mon.nudge == 11f && mon.from == 0f && mon.to == 1000f, "grip centred in the hinge gap");
+        check(mon.growth(40f) == 40f && mon.size == 500f, "dragging down grows the lid 1:1");
+        WorkspaceGeometry.Edge flipped = WorkspaceGeometry.between(WorkspaceGeometry.MONITOR,
+                new InputDeckLayout.Box(0, 422, 1000, 500), new InputDeckLayout.Box(0, 0, 1000, 400), 30f);
+        check(flipped.side == WorkspaceGeometry.TOP && flipped.growth(40f) == -40f,
+                "lid below base: dragging up grows it");
+        WorkspaceGeometry.Edge pad = WorkspaceGeometry.between(WorkspaceGeometry.TRACKPAD,
+                panes[WorkspaceGeometry.TRACKPAD], panes[WorkspaceGeometry.KEYBOARD], 30f);
+        check(pad.vertical() && pad.side == WorkspaceGeometry.LEFT && pad.pos == 708f,
+                "pad right of the keys: a vertical divider on the pad's left");
+        check(pad.growth(-50f) == 50f && pad.from == 508f && pad.to == 868f,
+                "dragging left grows the pad, along the height they share");
+        WorkspaceGeometry.Edge bar = WorkspaceGeometry.between(WorkspaceGeometry.BAR,
+                panes[WorkspaceGeometry.BAR], panes[WorkspaceGeometry.MONITOR], 4f);
+        check(bar.vertical() && bar.side == WorkspaceGeometry.RIGHT && bar.nudge == 4f,
+                "bar left of the desktop: its right edge, grip nudged at most 4px into the gap");
+        WorkspaceGeometry.Edge channel = WorkspaceGeometry.side(WorkspaceGeometry.TRACKPAD,
+                new InputDeckLayout.Box(400, 600, 200, 300), WorkspaceGeometry.LEFT, 2f);
+        check(channel.growth(-10f) == 20f, "a centred channel grows twice what one side moved");
+        WorkspaceGeometry.Edge top = WorkspaceGeometry.side(WorkspaceGeometry.HEIGHT,
+                panes[WorkspaceGeometry.TRACKPAD], WorkspaceGeometry.TOP, 1f);
+        check(top.pos == 508f && top.size == 360f && top.growth(-30f) == 30f, "free top edge: up grows");
 
-        // 2D corner resizing grows both width and height when any corner is pulled outward.
+        // Hit test: nearest grip wins, so a pad edge lying on the full-width divider still wins over the pad.
+        WorkspaceGeometry.Edge padTop = WorkspaceGeometry.side(WorkspaceGeometry.HEIGHT,
+                new InputDeckLayout.Box(708, 522, 292, 400), WorkspaceGeometry.TOP, 1f);
+        WorkspaceGeometry.Edge[] edges = {mon, padTop};
+        check(WorkspaceGeometry.hitEdge(edges, 860f, 520f, 24f) == 1, "over the pad: its own top edge");
+        check(WorkspaceGeometry.hitEdge(edges, 500f, 515f, 24f) == 0, "elsewhere: the monitor divider");
+        check(WorkspaceGeometry.hitEdge(edges, 500f, 300f, 24f) == -1, "pane body: no edge");
+
         WorkspaceGeometry.ResizeState start = new WorkspaceGeometry.ResizeState(
                 0.55f, 1.0f, 1.0f, 220f, 28f, 40f);
-        for (int corner = 0; corner < 4; corner++) {
-            float pullX = WorkspaceGeometry.cornerSignX(corner) * 80f;
-            float pullY = WorkspaceGeometry.cornerSignY(corner) * 80f;
-            WorkspaceGeometry.ResizeState grownPad = WorkspaceGeometry.resizeCorner(
-                    start, WorkspaceGeometry.TRACKPAD, corner, pullX, pullY,
-                    1000f, 900f, 900f, 1f, 500f, true, true, true, true, false);
-            check(grownPad.padScale > start.padScale && grownPad.padHeight > start.padHeight,
-                    "pulling trackpad corner " + corner + " outward grows both width and height");
-            WorkspaceGeometry.ResizeState grownMon = WorkspaceGeometry.resizeCorner(
-                    start, WorkspaceGeometry.MONITOR, corner, pullX, pullY,
-                    1000f, 900f, 900f, 1f, 500f, true, true, true, true, false);
-            check(grownMon.monitorFraction > start.monitorFraction && grownMon.barScale < start.barScale,
-                    "pulling monitor corner " + corner + " outward grows monitor height and width");
-        }
+
+        // Portrait: the bar leaves its shelf for the monitor's side and docks again from the keys.
+        int M = WorkspaceGeometry.MONITOR, K = WorkspaceGeometry.KEYBOARD, T = WorkspaceGeometry.TRACKPAD, B = WorkspaceGeometry.BAR;
+        check(WorkspaceGeometry.barMove(B, M, true, true) == WorkspaceGeometry.BAR_UNDOCK, "docked bar onto monitor undocks");
+        check(WorkspaceGeometry.barMove(B, K, true, true) == WorkspaceGeometry.BAR_STAY, "docked bar onto keys keeps the old swap");
+        check(WorkspaceGeometry.barMove(B, M, false, true) == WorkspaceGeometry.BAR_SIDE, "bar beside monitor picks a side");
+        check(WorkspaceGeometry.barMove(B, K, false, true) == WorkspaceGeometry.BAR_REDOCK
+                && WorkspaceGeometry.barMove(B, T, false, true) == WorkspaceGeometry.BAR_REDOCK, "bar back onto keys or pad docks");
+        check(WorkspaceGeometry.barMove(B, M, false, false) == WorkspaceGeometry.BAR_STAY
+                && WorkspaceGeometry.barMove(M, B, true, true) == WorkspaceGeometry.BAR_STAY, "landscape and other panes unchanged");
+
+        // The trackpad lifts onto the monitor's band and drops back onto the keys.
+        check(WorkspaceGeometry.padMove(T, M, false, true) == WorkspaceGeometry.PAD_LIFT, "pad onto monitor lifts");
+        check(WorkspaceGeometry.padMove(T, K, true, true) == WorkspaceGeometry.PAD_DROP, "lifted pad onto keys drops");
+        check(WorkspaceGeometry.padMove(T, B, true, true) == WorkspaceGeometry.PAD_BLOCK
+                && WorkspaceGeometry.padMove(K, T, true, true) == WorkspaceGeometry.PAD_BLOCK, "base-only pad swaps do nothing while lifted");
+        check(WorkspaceGeometry.padMove(T, M, false, false) == WorkspaceGeometry.PAD_STAY
+                && WorkspaceGeometry.padMove(T, K, false, true) == WorkspaceGeometry.PAD_STAY
+                && WorkspaceGeometry.padMove(M, K, true, true) == WorkspaceGeometry.PAD_STAY, "everything else keeps the old rules");
 
         // Swapping any pair of {Monitor, Keyboard, Trackpad, Bar} updates arrangement and is reversible.
         WorkspaceGeometry.Arrangement init = new WorkspaceGeometry.Arrangement(false, false, false, false, false);
@@ -192,18 +219,6 @@ public class InputDeckLayoutCheck {
         WorkspaceGeometry.Arrangement kbBarShelf = WorkspaceGeometry.swap(
                 init, WorkspaceGeometry.KEYBOARD, WorkspaceGeometry.BAR, false, true, 350f, panes[WorkspaceGeometry.BAR]);
         check(kbBarShelf.padTop, "Keyboard <-> Bar in portrait shelf swaps vertical shelf order");
-
-        // Rubber-band: the overshoot is how far the finger went past the wheel's 64dp limit.
-        WorkspaceGeometry.ResizeState wheel = new WorkspaceGeometry.ResizeState(
-                0.55f, 1f, 1f, 220f, 60f, 40f);
-        WorkspaceGeometry.Resize pull = (x, y) -> WorkspaceGeometry.resizeCorner(
-                wheel, WorkspaceGeometry.WHEEL, WorkspaceGeometry.CORNER_BR, x, y,
-                1000f, 900f, 900f, 1f, 500f, true, true, true, true, false);
-        float[] over = WorkspaceGeometry.overshoot(pull, 30f, 0f);
-        check(Math.abs(over[0] - 26f) < 1f && over[1] == 0f, "overshoot past the limit: " + over[0]);
-        check(WorkspaceGeometry.overshoot(pull, 3f, 0f)[0] == 0f, "inside the limit nothing overshoots");
-        check(Math.abs(WorkspaceGeometry.overshoot(pull, 0f, 25f)[1] - 25f) < 1f,
-                "an axis the wheel cannot grow along is all overshoot");
 
         // Magnets: the dragged value sticks to its default; untouched values never move.
         WorkspaceGeometry.ResizeState near = new WorkspaceGeometry.ResizeState(

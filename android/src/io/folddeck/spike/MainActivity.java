@@ -77,6 +77,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private AddressView addressView;
     private ShortcutsView shortcutsView;
     private ShortcutBar shortcutBar;
+    private final Predictor predictor = new Predictor();
+
+    private void showPrediction() {
+        if (keyboard != null) keyboard.setPrediction(predictor.weights(), predictor.suggestions());
+    }
     private TextView coverToggle;
     /** Unfolded only: the desktop alone, centred, no frame -- for watching video. */
     private TextView theatreToggle;
@@ -91,14 +96,24 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private int shortcutsReturnTo = SCREEN_HOME;
     private int settingsReturnTo = SCREEN_HOME;
     private ResizeOverlay resizeOverlay;
-    private int resizePosture = -1;
+    private int resizePosture = -1, resizePreset = -1;
     private float monitorFraction = -1f, padScale = 1f, barScale = 1f;
     private boolean resizeFramePending, resizeSnapped;
-    private boolean barBesideMonitor;
+    private boolean barBesideMonitor, barAroundPad, splitShown, sideBySideShown;
     private float padHeight = -1f, wheelWidth = 28f, buttonHeight = 40f;
     private float padHeightLimit = 500f;
     private boolean deckFlip, padLeft, barFlip, padTop, splitOverrideActive, splitOverride;
+    /** Portrait: the bar has left the keyboard's shelf to sit beside the desktop; and whether it could dock. */
+    private boolean barBeside, barCanDock;
+    /** The trackpad has left the base for a band under the desktop: asked for, possible, and in effect. */
+    private boolean padLid, padCanLift, padInLid;
+    /** The studio drag that last docked or undocked the bar. */
+    private int barDockGesture = -1;
     private WorkspaceGeometry.ResizeState resizeStartState;
+    /** Deck height a divider drag started with, px. */
+    private float resizeStartAvailable;
+    /** The bar's size at scale 1 in the desktop pane (before limits), px. */
+    private float barUnitPx;
     private PhoneSharing sharing;
     private final Runnable resizeFrame = () -> {
         resizeFramePending = false;
@@ -211,6 +226,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     // ------------------------------------------------------------------ //
     private void build() {
         prefs = getSharedPreferences(Prefs.NAME, MODE_PRIVATE);
+        Prefs.migrateSizes(prefs);
         sharing = new PhoneSharing(this, prefs);
         sharing.changed = this::updateSharing;
         // Before any view exists: every screen reads the palette and font as it
@@ -386,6 +402,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             }
             @Override public void onButton(int button, boolean down) {
                 if (stream != null) stream.sendButton(button, down);
+                if (down) {   // a click can put the cursor anywhere
+                    predictor.lost();
+                    showPrediction();
+                }
             }
             @Override public void onScroll(int dv, int dh) {
                 if (stream != null) stream.sendScroll(dv, dh);
@@ -460,7 +480,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         fitVideo = () -> {
             int paneW = videoPane.getWidth(), paneH = videoPane.getHeight();
             if (paneW <= 0 || paneH <= 0) return;
-            if (fitRaisedPadVideo(paneW, paneH)) return;
+            // A trackpad lifted out of the base takes a band along the bottom; the
+            // desktop and the bar share what is above it.
+            int padBand = lidPadBand(paneH);
+            if (padBand > 0) paneH = Math.max(1, paneH - padBand - Ui.dp(this, 8));
+            barAroundPad = fitRaisedPadVideo(paneW, paneH);
+            if (barAroundPad) return;
             float aspect = (float) streamSize[0] / streamSize[1];
             boolean shortcutInVideo = shortcutBar.getParent() == videoPane
                     && shortcutBar.getVisibility() == View.VISIBLE;
@@ -489,7 +514,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             }
             // A side band too thin to hold even one column of buttons is not worth
             // turning the deck sideways for.
-            boolean column = paneW - (int) (paneH * aspect) >= Ui.dp(this, ShortcutBar.COLUMN_MIN_DP);
+            // Dragged out of the keyboard's shelf (portrait), the bar is always a
+            // column beside the desktop, however little room the desktop leaves.
+            boolean beside = barBeside && barCanDock;
+            boolean column = beside
+                    || paneW - (int) (paneH * aspect) >= Ui.dp(this, ShortcutBar.COLUMN_MIN_DP);
             barBesideMonitor = column;
             int x, y, vw, vh;
             boolean grid = false;
@@ -506,13 +535,19 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 boolean chassis = lid.getPaddingTop() > 0;
                 vh = paneH - (chassis ? 2 : controlsShown ? 1 : 0) * line;
                 int naturalWidth = paneW - (int) (vh * aspect);
-                int deckW = Math.round(Motion.clamp(naturalWidth * barScale,
+                barUnitPx = Math.max(naturalWidth, Ui.dp(this, ShortcutBar.COLUMN_MIN_DP));
+                int deckW = Math.round(Motion.clamp(barUnitPx * barScale,
                         Ui.dp(this, ShortcutBar.COLUMN_MIN_DP), paneW * 0.6f));
                 vw = Math.min(paneW - deckW, (int) (vh * aspect));
                 vh = Math.round(vw / aspect);
-                x = flip ? 0 : paneW - vw;
+                // Monitor and deck each hug their outer edge, so resizing the
+                // deck moves only the edge it shares with the desktop.
+                // (Beside: the desktop centres in what the bar leaves, so a
+                // clamped bar never opens a hole on one side only.)
+                int free = paneW - deckW - vw;
+                x = flip ? (beside ? free / 2 : 0) : deckW + (beside ? free / 2 : free);
                 y = (paneH - vh) / 2;
-                place(shortcutBar, flip ? vw : 0, 0, deckW, paneH);
+                place(shortcutBar, flip ? paneW - deckW : 0, 0, deckW, paneH);
                 shortcutBar.setCompact(deckW < Ui.dp(this, ShortcutBar.COMPACT_BELOW_DP));
             } else {
                 int band = paneH - (int) (paneW / aspect);
@@ -520,17 +555,19 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 // takes all of it, as a grid of rows once it is taller than one.
                 band = Math.max(Ui.dp(this, ShortcutBar.ROW_MIN_DP), controlsShown
                         ? Math.min(band, Ui.dp(this, ShortcutBar.ROW_MAX_DP)) : band);
+                barUnitPx = band;
                 band = Math.round(Motion.clamp(band * barScale,
                         Math.min(paneH / 2f, Ui.dp(this, 56)), Math.max(0, paneH - Ui.dp(this, 48))));
                 grid = band > Ui.dp(this, ShortcutBar.ROW_MAX_DP);
                 vh = Math.min(paneH - band, (int) (paneW / aspect));
                 vw = (int) (vh * aspect);
-                // Any height the cap leaves over is split around the pair.
-                int top = (paneH - vh - band) / 2;
+                // The deck sits on the pane's edge with the desktop against it;
+                // any height left over goes beyond the desktop. Resizing the deck
+                // then moves only the edge it shares with the desktop.
                 x = coverInputMode ? paneW - vw : (paneW - vw) * Prefs.desktopAlign(prefs) / 2;
-                int pairTop = coverInputMode ? 0 : top;
-                y = flip ? pairTop + band : pairTop;
-                place(shortcutBar, 0, flip ? pairTop : y + vh, paneW, band);
+                int pairTop = flip ? 0 : paneH - vh - band;
+                y = flip ? band : pairTop;
+                place(shortcutBar, 0, flip ? 0 : y + vh, paneW, band);
                 shortcutBar.setCompact(false);
             }
             place(surfaceView, x, y, vw, vh);
@@ -559,7 +596,34 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         // draw over (and take touches from) the split trackpad laid in its middle.
         keyboard.setKeyListener((code, down) -> {
             if (stream != null) stream.sendKey(code, down);
+            if (predictor.key(code, down)) showPrediction();
         });
+        // A suggestion types the rest of its word and a space, as keystrokes.
+        keyboard.setSuggestionListener(word -> {
+            for (char ch : predictor.rest(word).toCharArray()) {
+                int code = ch == ' ' ? Ev.SPACE : Predictor.code(ch);
+                if (code < 0) continue;
+                if (stream != null) {
+                    stream.sendKey(code, true);
+                    stream.sendKey(code, false);
+                }
+                predictor.key(code, true);
+            }
+            showPrediction();
+        });
+        keyboard.setSmart(Prefs.smartKeys(prefs), Prefs.wordSuggestions(prefs));
+        new Thread(() -> {
+            // Optional assets (android/fetch_words.py); without them the keyboard just stays plain.
+            try (java.io.BufferedReader words = new java.io.BufferedReader(
+                         new java.io.InputStreamReader(getAssets().open("words.txt")));
+                 java.io.BufferedReader next = new java.io.BufferedReader(
+                         new java.io.InputStreamReader(getAssets().open("next.txt")))) {
+                predictor.load(words, next);
+                runOnUiThread(this::showPrediction);
+            } catch (java.io.IOException e) {
+                android.util.Log.i("FoldDeck", "no word list; smart typing off");
+            }
+        }, "folddeck-words").start();
         // The TrackPoint drives the same virtual cursor the pointer pad uses, so
         // the nub and the pad never disagree about where the pointer is.
         keyboard.setTrackPointListener((dx, dy) -> {
@@ -637,7 +701,35 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         return deckStage;
     }
 
+    /** Height of the trackpad's band at the bottom of the monitor pane; 0 when it lives in the base. */
+    private int lidPadBand(int paneH) {
+        if (!padInLid || paneH <= 0) return 0;
+        float want = padHeight > 0 ? Ui.dp(this, padHeight)
+                : Motion.clamp(paneH * 0.3f, Ui.dp(this, 110), Ui.dp(this, 180));
+        return Math.round(Motion.clamp(want, Math.min(Ui.dp(this, 100), paneH * 0.6f), paneH * 0.6f));
+    }
+
+    private boolean padHorizontal() {
+        return !padInLid && inputDeck.trackpadHorizontal();
+    }
+
     private void layoutFloatingTrackpad() {
+        if (padInLid) {
+            boolean up = videoPane.isShown() && videoPane.getHeight() > 0;
+            trackpadDeck.setVisibility(up ? View.VISIBLE : View.GONE);
+            if (!up) return;
+            android.graphics.Rect pane = new android.graphics.Rect(0, 0, videoPane.getWidth(), videoPane.getHeight());
+            deckStage.offsetDescendantRectToMyCoords(videoPane, pane);
+            int band = lidPadBand(pane.height()), top = pane.bottom - band;
+            trackpadDeck.setInset(Ui.dp(this, 6));
+            place(trackpadDeck, pane.left, top, pane.width(), band);
+            trackpadDeck.measure(View.MeasureSpec.makeMeasureSpec(pane.width(), View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(band, View.MeasureSpec.EXACTLY));
+            trackpadDeck.layout(pane.left, top, pane.right, top + band);
+            trackpadDeck.setAlpha(1f);
+            trackpadDeck.setTranslationY(0f);
+            return;
+        }
         boolean shown = trackpadSlot.isShown() && base.getVisibility() == View.VISIBLE;
         trackpadDeck.setVisibility(shown ? View.VISIBLE : View.GONE);
         if (!shown) return;
@@ -792,6 +884,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             keyboard.setHaptics(Prefs.keyboardHaptics(prefs));
             keyboard.setLook(Prefs.keyLabelScale(prefs), Prefs.keyGapScale(prefs),
                     Prefs.showTrackpoint(prefs), Prefs.showFnRow(prefs));
+            keyboard.setSmart(Prefs.smartKeys(prefs), Prefs.wordSuggestions(prefs));
         }
         configureTrackpad();
         applyPosture(false);
@@ -811,9 +904,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     /** Allocate the exact measured bands for video, shortcuts, keyboard and pad. */
     private void applyPosture(boolean animateCover) {
         int currentPosture = posture();
-        if (resizePosture != currentPosture) {
+        int currentPreset = Prefs.layout(prefs, currentPosture);
+        if (resizePosture != currentPosture || resizePreset != currentPreset) {
             if (resizeOverlay != null) finishResize(false);
             resizePosture = currentPosture;
+            resizePreset = currentPreset;
             loadResize();
         }
         if (!animateCover && coverAnimator != null) {
@@ -866,6 +961,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         int availablePx = Math.max(0, totalH - hingePx);
         float density = getResources().getDisplayMetrics().density;
         // A split board is a keyboard-sized band; the pad lives inside it.
+        padCanLift = keyboardShown && trackpadShown && !coverDisplay;
+        padInLid = padLid && padCanLift;
+        // Up beside the desktop the pad is no longer the base's to lay out.
+        if (padInLid) trackpadShown = false;
         boolean split = (splitOverrideActive ? splitOverride : Prefs.layoutSplit(preset))
                 && keyboardShown && trackpadShown;
         DeckLayout.Result solved = DeckLayout.solve(totalW / density, availablePx / density,
@@ -876,12 +975,27 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 : availablePx;
         if (controlsShown && monitorFraction >= 0f) {
             lidPx = Math.round(DeckLayout.resizedLid(availablePx / density,
-                    monitorFraction, keyboardShown, solved.portraitConsole && Prefs.showShortcuts(prefs)) * density);
+                    monitorFraction, keyboardShown,
+                    solved.portraitConsole && Prefs.showShortcuts(prefs) && !barBeside) * density);
         }
         boolean showShortcuts = Prefs.showShortcuts(prefs);
-        boolean dockShortcuts = solved.portraitConsole && controlsShown && showShortcuts;
+        barCanDock = solved.portraitConsole && controlsShown && showShortcuts;
+        boolean dockShortcuts = barCanDock && !barBeside;
+        if (padInLid && monitorFraction < 0f) {
+            // The pad's band is extra: grow the lid by it (down to the keys'
+            // minimum) so the desktop keeps the size it had without the pad.
+            int most = Math.round(DeckLayout.resizedLid(availablePx / density, 1f,
+                    keyboardShown, dockShortcuts) * density);
+            lidPx = Math.max(lidPx, Math.min(most, lidPx + lidPadBand(lidPx) + Ui.dp(this, 8)));
+        }
         raisedPad = trackpadShown && keyboardShown && (solved.sideBySide || split)
                 && showShortcuts && !dockShortcuts && !theatre;
+        splitShown = split;
+        sideBySideShown = solved.sideBySide && !split;
+        // Pad height is the pad's own column beside the keys (or raised over the
+        // monitor). Alone it fills the base, and in a split board it is the
+        // channel between the halves: either way the keys set its height.
+        boolean ownHeight = trackpadShown && keyboardShown && padHeight > 0 && (raisedPad || !split);
         // Freeze the keyboard's allocation before reserving independent pad height.
         int padding = base.getPaddingTop() + base.getPaddingBottom();
         int referenceHeight = Math.max(0, availablePx - lidPx - padding);
@@ -894,7 +1008,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         padHeightLimit = Math.max(100f, InputDeckLayout.maxPadHeight(reference, maxBase, gap,
                 keyboardShown, solved.sideBySide || split) / density);
         if (raisedPad) padHeightLimit = Math.max(100f, (totalH - base.getPaddingBottom()) / density);
-        if (trackpadShown && padHeight > 0 && !raisedPad) {
+        if (padInLid) padHeightLimit = Math.max(100f, lidPx * 0.6f / density);
+        if (ownHeight && !raisedPad) {
             int required = InputDeckLayout.requiredHeight(reference, gap, Math.round(padHeight * density),
                     keyboardShown, solved.sideBySide || split, dockShortcuts && !split);
             lidPx = Math.min(lidPx, availablePx - Math.min(maxBase, required) - padding);
@@ -906,6 +1021,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         if (theatre) dockShortcuts = shortcutBar.getParent() == inputDeck;
         setShortcutDocked(dockShortcuts);
         shortcutBar.setTwoRows(dockShortcuts);
+        if (dockShortcuts) shortcutBar.setCompact(false);   // the column's small labels stay beside the monitor
         // Docked without the chassis, the deck runs flush to the app frame at the
         // sides and sits right under the lid's separator: drawing those edges too
         // would double the line. See ShortcutBar.edges.
@@ -923,7 +1039,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             trackpadDeck.setInputEnabled(!animateCover && controlsShown && resizeOverlay == null);
             inputDeck.setArrangement(padTop, deckFlip);
             inputDeck.setBarScale(barScale);
-            inputDeck.setPadHeight(raisedPad ? -1f : padHeight);
+            inputDeck.setPadHeight(ownHeight && !raisedPad ? padHeight : -1f);
             inputDeck.setReferenceHeight(referenceHeight);
             trackpadDeck.setDimensions(wheelWidth, buttonHeight);
             inputDeck.configure(visualControls && (keyboardShown || !controlsShown),
@@ -963,24 +1079,89 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     private void loadResize() {
         int p = resizePosture >= 0 ? resizePosture : posture();
-        monitorFraction = Prefs.resize(prefs, Prefs.RESIZE_MONITOR, p, -1f);
-        padScale = Motion.clamp(Prefs.resize(prefs, Prefs.RESIZE_PAD, p,
+        int l = resizePreset >= 0 ? resizePreset : Prefs.layout(prefs, p);
+        monitorFraction = Prefs.resize(prefs, Prefs.RESIZE_MONITOR, p, l, -1f);
+        padScale = Motion.clamp(Prefs.resize(prefs, Prefs.RESIZE_PAD, p, l,
                 Prefs.trackpadSize(prefs)), 0.7f, 1.5f);
-        barScale = Motion.clamp(Prefs.resize(prefs, Prefs.RESIZE_BAR, p, 1f),
+        barScale = Motion.clamp(Prefs.resize(prefs, Prefs.RESIZE_BAR, p, l, 1f),
                 Prefs.BAR_SIZE_MIN, Prefs.BAR_SIZE_MAX);
-        padHeight = Prefs.resize(prefs, Prefs.RESIZE_HEIGHT, p, -1f);
-        wheelWidth = Motion.clamp(Prefs.resize(prefs, Prefs.RESIZE_WHEEL, p, 28f), 18f, 64f);
-        buttonHeight = Motion.clamp(Prefs.resize(prefs, Prefs.RESIZE_BUTTONS, p, 40f), 28f, 80f);
+        padHeight = Prefs.resize(prefs, Prefs.RESIZE_HEIGHT, p, l, -1f);
+        wheelWidth = Motion.clamp(Prefs.resize(prefs, Prefs.RESIZE_WHEEL, p, l, 28f), 18f, 64f);
+        buttonHeight = Motion.clamp(Prefs.resize(prefs, Prefs.RESIZE_BUTTONS, p, l, 40f), 28f, 80f);
         deckFlip = Prefs.resizeFlag(prefs, Prefs.RESIZE_DECK_FLIP, p, false);
         padTop = Prefs.resizeFlag(prefs, Prefs.RESIZE_PAD_TOP, p, false);
-        barFlip = Prefs.shortcutsFlip(prefs);
+        // Portrait keeps its own side: choosing one there must not move the bar
+        // in landscape or on the cover, which share the Settings switch.
+        barFlip = p == Prefs.POSTURE_PORTRAIT
+                ? Prefs.resizeFlag(prefs, Prefs.RESIZE_BAR_FLIP, p, Prefs.shortcutsFlip(prefs))
+                : Prefs.shortcutsFlip(prefs);
+        barBeside = prefs.getBoolean(Prefs.sizeKey(Prefs.RESIZE_BAR_BESIDE, p, l), false);
+        padLid = prefs.getBoolean(Prefs.sizeKey(Prefs.RESIZE_PAD_LID, p, l), false);
         boolean landscape = p != Prefs.POSTURE_PORTRAIT;
         padLeft = Prefs.trackpadLeft(prefs, landscape);
         splitOverrideActive = false;
     }
 
+    /** Where {@code v} is laid out in the deck stage (ignoring any slide in flight); null if hidden. */
+    private InputDeckLayout.Box laidOut(View v) {
+        if (v == null || !v.isShown() || v.getWidth() <= 0 || v.getHeight() <= 0) return null;
+        int[] stage = new int[2], at = new int[2];
+        deckStage.getLocationInWindow(stage);
+        v.getLocationInWindow(at);
+        return new InputDeckLayout.Box(Math.round(at[0] - stage[0] - v.getTranslationX()),
+                Math.round(at[1] - stage[1] - v.getTranslationY()), v.getWidth(), v.getHeight());
+    }
+
+    /**
+     * The edges that can really move in the layout on screen, each with the one
+     * value it changes: the monitor/controls divider, the bar's edge against
+     * the desktop (or the keys, docked), the trackpad's edge against its
+     * neighbour, and the trackpad's free edge where it has a height of its own.
+     */
+    private WorkspaceGeometry.Edge[] resizeEdges() {
+        java.util.ArrayList<WorkspaceGeometry.Edge> out = new java.util.ArrayList<>();
+        float nudge = Ui.dp(this, Chassis.HINGE_DP) / 2f;
+        InputDeckLayout.Box lidBox = laidOut(lid), baseBox = laidOut(base), monitor = laidOut(surfaceView),
+                bar = laidOut(shortcutBar), keys = laidOut(keyboard), pad = laidOut(trackpadDeck);
+        boolean docked = shortcutBar.getParent() == inputDeck;
+        if (controlsShown && lidBox != null && baseBox != null) {
+            out.add(WorkspaceGeometry.between(ResizeOverlay.MONITOR, lidBox, baseBox, nudge));
+        }
+        if (bar != null) {
+            InputDeckLayout.Box against = docked ? keys : barAroundPad ? null : monitor;
+            if (against != null) out.add(WorkspaceGeometry.between(ResizeOverlay.BAR, bar, against, nudge));
+        }
+        if (pad != null && padInLid) {
+            out.add(WorkspaceGeometry.side(ResizeOverlay.HEIGHT, pad, WorkspaceGeometry.TOP, 1f));
+        } else if (pad != null && keys != null && keyboardShown) {
+            if (splitShown) {
+                // The channel widens on both sides, each by its half's share; the
+                // value scales the channel (keys width x 0.19), not the pad view.
+                float channel = InputDeckLayout.SPLIT_CHANNEL * keys.w * padScale;
+                for (int side : new int[]{WorkspaceGeometry.LEFT, WorkspaceGeometry.RIGHT}) {
+                    WorkspaceGeometry.Edge e = WorkspaceGeometry.side(ResizeOverlay.TRACKPAD, pad, side,
+                            1f / Math.max(0.1f, keyboard.splitShare(side == WorkspaceGeometry.RIGHT)));
+                    out.add(new WorkspaceGeometry.Edge(e.target, e.side, e.pos, e.from, e.to, channel, e.gain, 0f));
+                }
+            } else {
+                out.add(WorkspaceGeometry.between(ResizeOverlay.TRACKPAD, pad,
+                        docked && bar != null ? bar : keys, nudge));
+            }
+            // A height of its own: raised over the monitor, or its own column beside
+            // the keys, anchored by the deck order. Docked, only when the pad grows
+            // up from the keys (its other arrangements move the keys instead).
+            boolean free = raisedPad || sideBySideShown && !docked
+                    || docked && !splitShown && !deckFlip && !padTop;
+            if (free) {
+                out.add(WorkspaceGeometry.side(ResizeOverlay.HEIGHT, pad,
+                        deckFlip && !docked ? WorkspaceGeometry.BOTTOM : WorkspaceGeometry.TOP, 1f));
+            }
+        }
+        return out.toArray(new WorkspaceGeometry.Edge[0]);
+    }
+
     private float resizeValue(int target) {
-        if (target == ResizeOverlay.HEIGHT || target == ResizeOverlay.TRACKPAD && !inputDeck.trackpadHorizontal()) return Motion.clamp(((padHeight < 0
+        if (target == ResizeOverlay.HEIGHT || target == ResizeOverlay.TRACKPAD && !padHorizontal()) return Motion.clamp(((padHeight < 0
                 ? trackpadDeck.getHeight() / getResources().getDisplayMetrics().density : padHeight) - 100f) / Math.max(1f, padHeightLimit - 100f), 0, 1);
         if (target == ResizeOverlay.WHEEL) return (wheelWidth - 18f) / 46f;
         if (target == ResizeOverlay.BUTTONS) return (buttonHeight - 28f) / 52f;
@@ -1056,23 +1237,44 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                         : (trackpadDeck.isShown() ? trackpadDeck.getHeight() / density : -1f);
                 resizeStartState = new WorkspaceGeometry.ResizeState(
                         startMon, padScale, barScale, startPadH, wheelWidth, buttonHeight);
+                resizeStartAvailable = available;
+                resizeSnapped = false;
             }
-            @Override public float[] resizeCorner(int target, int corner, float dxPx, float dyPx,
-                                                  float overlayW, float overlayH) {
+            @Override public WorkspaceGeometry.Edge[] edges() { return resizeEdges(); }
+            @Override public void resizeEdge(WorkspaceGeometry.Edge edge, float travelPx) {
                 if (resizeStartState == null) beginResize();
-                float density = getResources().getDisplayMetrics().density;
-                float deckHeightDp = (lid.getHeight() + base.getHeight()) / density;
-                boolean shortcutDocked = shortcutBar.getParent() == inputDeck;
-                if (target == ResizeOverlay.KEYBOARD && padHeight < 0 && trackpadDeck.isShown()) {
-                    padHeight = resizeStartState.padHeight;
-                }
                 WorkspaceGeometry.ResizeState start = resizeStartState;
-                boolean horizontal = inputDeck.trackpadHorizontal();
-                WorkspaceGeometry.Resize resize = (x, y) -> WorkspaceGeometry.resizeCorner(
-                        start, target, corner, x, y, overlayW, overlayH,
-                        deckHeightDp, density, padHeightLimit, controlsShown, keyboardShown,
-                        horizontal, barBesideMonitor, shortcutDocked);
-                WorkspaceGeometry.ResizeState raw = resize.at(dxPx, dyPx);
+                float density = getResources().getDisplayMetrics().density;
+                // The pane grows by exactly what the finger travelled. Every size
+                // is proportional to its value until a limit, so the value scales
+                // with the pane; past a limit the layout stops and the overlay
+                // stretches instead.
+                float size = Math.max(1f, edge.size), grown = Math.max(1f, edge.size + edge.growth(travelPx));
+                float mon = start.monitorFraction, pad = start.padScale, bar = start.barScale,
+                        height = start.padHeight;
+                if (edge.target == ResizeOverlay.MONITOR) {
+                    float deckDp = resizeStartAvailable / density;
+                    mon = DeckLayout.resizedLid(deckDp, grown / Math.max(1f, resizeStartAvailable),
+                            keyboardShown, shortcutBar.getParent() == inputDeck) / Math.max(1f, deckDp);
+                } else if (edge.target == ResizeOverlay.TRACKPAD && start.padHeight > 0
+                        && !padHorizontal()) {
+                    // A stacked pad with a height of its own: the divider sets that
+                    // height (its scale would only resize the keys behind it).
+                    height = Motion.clamp(grown / density, 100f, Math.max(100f, padHeightLimit));
+                } else if (edge.target == ResizeOverlay.TRACKPAD) {
+                    pad = Motion.clamp(start.padScale * grown / size,
+                            Prefs.TRACKPAD_SIZE_MIN, Prefs.TRACKPAD_SIZE_MAX);
+                } else if (edge.target == ResizeOverlay.BAR) {
+                    // From the bar as it looks, over its unlimited size: a bar held
+                    // at its minimum grows the moment the finger pulls.
+                    float unit = shortcutBar.getParent() == videoPane && barUnitPx > 0f
+                            ? barUnitPx : size / Math.max(0.01f, start.barScale);
+                    bar = Motion.clamp(grown / unit, Prefs.BAR_SIZE_MIN, Prefs.BAR_SIZE_MAX);
+                } else if (edge.target == ResizeOverlay.HEIGHT) {
+                    height = Motion.clamp(grown / density, 100f, Math.max(100f, padHeightLimit));
+                }
+                WorkspaceGeometry.ResizeState raw = new WorkspaceGeometry.ResizeState(
+                        mon, pad, bar, height, start.wheelWidth, start.buttonHeight);
                 WorkspaceGeometry.ResizeState next = WorkspaceGeometry.snap(start, raw,
                         Prefs.trackpadSize(prefs));
                 // A light tick as a size clicks onto its magnet, once per catch.
@@ -1081,19 +1283,21 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     resizeOverlay.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK);
                 }
                 resizeSnapped = snapped;
-                monitorFraction = next.monitorFraction;
-                padScale = next.padScale;
-                barScale = next.barScale;
-                padHeight = next.padHeight;
-                wheelWidth = next.wheelWidth;
-                buttonHeight = next.buttonHeight;
+                // Only the value this edge owns: the rest keep what they were,
+                // defaults included.
+                if (edge.target == ResizeOverlay.MONITOR) monitorFraction = next.monitorFraction;
+                if (edge.target == ResizeOverlay.TRACKPAD) {
+                    padScale = next.padScale;
+                    padHeight = next.padHeight;
+                }
+                if (edge.target == ResizeOverlay.BAR) barScale = next.barScale;
+                if (edge.target == ResizeOverlay.HEIGHT) padHeight = next.padHeight;
                 if (!resizeFramePending) {
                     resizeFramePending = true;
                     deck.postOnAnimation(resizeFrame);
                 }
-                return WorkspaceGeometry.overshoot(resize, dxPx, dyPx);
             }
-            @Override public boolean swap(int from, int to, float dropX, InputDeckLayout.Box toBox) {
+            private int[][] paneBounds() {
                 View[] panes = {surfaceView, keyboard, trackpadDeck, shortcutBar};
                 int[][] before = new int[panes.length][4];
                 int[] loc = new int[2];
@@ -1107,25 +1311,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                         before[i][3] = v.getHeight();
                     }
                 }
-                boolean curSplit = (splitOverrideActive ? splitOverride
-                        : Prefs.layoutSplit(Prefs.layout(prefs, posture())))
-                        && keyboardShown && trackpadDeck.isShown();
-                boolean dockShortcuts = shortcutBar.getParent() == inputDeck;
-                boolean sideBySide = inputDeck.trackpadHorizontal() && !dockShortcuts && !curSplit;
-                WorkspaceGeometry.Arrangement cur = new WorkspaceGeometry.Arrangement(
-                        deckFlip, padLeft, barFlip, padTop, curSplit);
-                WorkspaceGeometry.Arrangement next = WorkspaceGeometry.swap(
-                        cur, from, to, sideBySide, dockShortcuts, dropX, toBox);
-                if (next.deckFlip == deckFlip && next.padLeft == padLeft && next.barFlip == barFlip
-                        && next.padTop == padTop && next.split == curSplit) return false;
-                deckFlip = next.deckFlip;
-                padLeft = next.padLeft;
-                barFlip = next.barFlip;
-                padTop = next.padTop;
-                if (curSplit && !next.split) {
-                    splitOverrideActive = true;
-                    splitOverride = false;
-                }
+                return before;
+            }
+            /** Lay out the new arrangement and slide the panes there from {@code before}. */
+            private void rearrange(int[][] before) {
                 applyPosture(false);
                 // After the new layout, before it is drawn: no frame shows panes
                 // jumped to their new places.
@@ -1138,13 +1327,73 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                         return true;
                     }
                 });
+            }
+            @Override public boolean barSide(float x, InputDeckLayout.Box monitor) {
+                if (!barCanDock || !barBeside || monitor == null) return false;
+                boolean right = x > monitor.x + monitor.w * 0.5f;
+                if (right == barFlip) return false;
+                int[][] before = paneBounds();
+                barFlip = right;
+                rearrange(before);
+                return true;
+            }
+            @Override public boolean swap(int from, int to, float dropX, InputDeckLayout.Box toBox) {
+                int[][] before = paneBounds();
+                boolean curSplit = (splitOverrideActive ? splitOverride
+                        : Prefs.layoutSplit(Prefs.layout(prefs, posture())))
+                        && keyboardShown && trackpadDeck.isShown() && !padInLid;
+                boolean dockShortcuts = shortcutBar.getParent() == inputDeck;
+                boolean sideBySide = padHorizontal() && !dockShortcuts && !curSplit;
+                WorkspaceGeometry.Arrangement cur = new WorkspaceGeometry.Arrangement(
+                        deckFlip, padLeft, barFlip, padTop, curSplit);
+                WorkspaceGeometry.Arrangement next = WorkspaceGeometry.swap(
+                        cur, from, to, sideBySide, dockShortcuts, dropX, toBox);
+                int barMove = WorkspaceGeometry.barMove(from, to, dockShortcuts, barCanDock);
+                int padMove = WorkspaceGeometry.padMove(from, to, padInLid, padCanLift);
+                if (padMove == WorkspaceGeometry.PAD_BLOCK) return false;
+                if (padMove != WorkspaceGeometry.PAD_STAY) {
+                    padLid = padMove == WorkspaceGeometry.PAD_LIFT;
+                    padHeight = -1f;   // a band's height up there, the pad's own down here
+                    barDockGesture = resizeOverlay.gesture();
+                    next = cur;
+                } else if (barMove != WorkspaceGeometry.BAR_STAY) {
+                    // The bar lands on the half of the monitor it was dropped on.
+                    boolean right = toBox != null && dropX > toBox.x + toBox.w * 0.5f;
+                    boolean beside = barMove != WorkspaceGeometry.BAR_REDOCK;
+                    boolean side = beside ? right : barFlip;
+                    if (beside == barBeside && side == barFlip) return false;
+                    if (beside != barBeside) {
+                        // The bar's size and the pad's height mean different things in
+                        // the shelf and beside the desktop: start each from its default.
+                        barScale = 1f;
+                        padHeight = -1f;
+                        barDockGesture = resizeOverlay.gesture();
+                    }
+                    barBeside = beside;
+                    next = new WorkspaceGeometry.Arrangement(deckFlip, padLeft, side, padTop, curSplit);
+                } else if (barDockGesture == resizeOverlay.gesture()) {
+                    // One drag that docked or undocked the bar does only that: the
+                    // shelf appearing under the finger must not trigger more swaps.
+                    return false;
+                } else
+                if (next.deckFlip == deckFlip && next.padLeft == padLeft && next.barFlip == barFlip
+                        && next.padTop == padTop && next.split == curSplit) return false;
+                deckFlip = next.deckFlip;
+                padLeft = next.padLeft;
+                barFlip = next.barFlip;
+                padTop = next.padTop;
+                if (curSplit && !next.split) {
+                    splitOverrideActive = true;
+                    splitOverride = false;
+                }
+                rearrange(before);
                 return true;
             }
             @Override public void change(int target, float fraction) {
-                if (target == ResizeOverlay.KEYBOARD && padHeight < 0 && trackpadDeck.isShown()) {
+                if (target == ResizeOverlay.KEYBOARD && padHeight < 0 && trackpadDeck.isShown() && !padInLid) {
                     padHeight = trackpadDeck.getHeight() / getResources().getDisplayMetrics().density;
                 }
-                if (target == ResizeOverlay.HEIGHT || target == ResizeOverlay.TRACKPAD && !inputDeck.trackpadHorizontal())
+                if (target == ResizeOverlay.HEIGHT || target == ResizeOverlay.TRACKPAD && !padHorizontal())
                     padHeight = 100f + fraction * Math.max(0f, padHeightLimit - 100f);
                 else if (target == ResizeOverlay.WHEEL) wheelWidth = 18f + fraction * 46f;
                 else if (target == ResizeOverlay.BUTTONS) buttonHeight = 28f + fraction * 52f;
@@ -1171,7 +1420,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 if (target == ResizeOverlay.BAR) return shortcutBar.getParent() == videoPane
                         && barBesideMonitor;
                 return target == ResizeOverlay.TRACKPAD && keyboardShown
-                        && inputDeck.trackpadHorizontal();
+                        && padHorizontal();
             }
             @Override public void reset() {
                 clearSwapTransforms();
@@ -1184,6 +1433,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 deckFlip = false;
                 padTop = false;
                 barFlip = false;
+                barBeside = false;
+                padLid = false;
                 padLeft = posture() == Prefs.POSTURE_PORTRAIT;
                 splitOverrideActive = false;
                 applyPosture(false);
@@ -1207,18 +1458,24 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         clearSwapTransforms();
         if (save) {
             boolean landscape = resizePosture != Prefs.POSTURE_PORTRAIT;
+            // Swapping out of Split turns the board into Both: the sizes go with it.
+            int preset = splitOverrideActive && !splitOverride ? Prefs.LAYOUT_BOTH : resizePreset;
+            int p = resizePosture;
             SharedPreferences.Editor ed = prefs.edit()
-                    .putFloat(Prefs.RESIZE_MONITOR + resizePosture, monitorFraction)
-                    .putFloat(Prefs.RESIZE_PAD + resizePosture, padScale)
-                    .putFloat(Prefs.RESIZE_BAR + resizePosture, barScale)
-                    .putFloat(Prefs.RESIZE_HEIGHT + resizePosture, padHeight)
-                    .putFloat(Prefs.RESIZE_WHEEL + resizePosture, wheelWidth)
-                    .putFloat(Prefs.RESIZE_BUTTONS + resizePosture, buttonHeight)
+                    .putFloat(Prefs.sizeKey(Prefs.RESIZE_MONITOR, p, preset), monitorFraction)
+                    .putFloat(Prefs.sizeKey(Prefs.RESIZE_PAD, p, preset), padScale)
+                    .putFloat(Prefs.sizeKey(Prefs.RESIZE_BAR, p, preset), barScale)
+                    .putFloat(Prefs.sizeKey(Prefs.RESIZE_HEIGHT, p, preset), padHeight)
+                    .putFloat(Prefs.sizeKey(Prefs.RESIZE_WHEEL, p, preset), wheelWidth)
+                    .putFloat(Prefs.sizeKey(Prefs.RESIZE_BUTTONS, p, preset), buttonHeight)
                     .putBoolean(Prefs.RESIZE_DECK_FLIP + resizePosture, deckFlip)
                     .putBoolean(Prefs.RESIZE_PAD_LEFT + resizePosture, padLeft)
                     .putBoolean(Prefs.RESIZE_BAR_FLIP + resizePosture, barFlip)
+                    .putBoolean(Prefs.sizeKey(Prefs.RESIZE_BAR_BESIDE, p, preset), barBeside)
+                    .putBoolean(Prefs.sizeKey(Prefs.RESIZE_PAD_LID, p, preset), padLid)
                     .putBoolean(Prefs.RESIZE_PAD_TOP + resizePosture, padTop)
-                    .putBoolean(Prefs.SHORTCUTS_FLIP, barFlip)
+                    .putBoolean(Prefs.SHORTCUTS_FLIP, p == Prefs.POSTURE_PORTRAIT
+                            ? Prefs.shortcutsFlip(prefs) : barFlip)
                     .putBoolean(landscape ? Prefs.TRACKPAD_LEFT_LANDSCAPE : Prefs.TRACKPAD_LEFT_PORTRAIT, padLeft);
             if (splitOverrideActive && !splitOverride && resizePosture >= 0 && resizePosture < Prefs.LAYOUT_KEYS.length) {
                 ed.putInt(Prefs.LAYOUT_KEYS[resizePosture], Prefs.LAYOUT_BOTH);
@@ -1330,6 +1587,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private void releaseDeckInput() {
         if (keyboard != null) keyboard.releaseAll();
         if (trackpadDeck != null) trackpadDeck.cancelInput();
+        predictor.reset();
+        showPrediction();
     }
 
     /**
@@ -1602,6 +1861,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         View top = push ? target : outgoing, under = push ? outgoing : target;
         if (top == home && under == deckStage) {
             float far = 1.06f;
+            // Origin-aware: Home zooms away from (and back onto) its Connect row.
+            View from = home.mainRow();
+            if (from.isLaidOut() && home.getWidth() > 0) {
+                int[] a = new int[2], b = new int[2];
+                home.getLocationInWindow(a);
+                from.getLocationInWindow(b);
+                home.setPivotX(b[0] - a[0] + from.getWidth() / 2f);
+                home.setPivotY(b[1] - a[1] + from.getHeight() / 2f);
+            }
             if (push && !Motion.spring(home, View.ALPHA, Motion.FADE).running()) {
                 home.setAlpha(0f);
                 home.setScaleX(far);
@@ -2110,7 +2378,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             lastNanos = now;
         }
 
-        final String text = String.format(Locale.US,
+        // Hidden HUD (the default): skip formatting it four times a second.
+        final String text = hud.getVisibility() != View.VISIBLE ? null : String.format(Locale.US,
                 "%s  %s:%d%n" +
                         "net    %6.2f Mbps   %6.1f MB%n" +
                         "frames %6d decoded  %4d dropped%n" +
@@ -2124,7 +2393,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
         runOnUiThread(() -> {
             if (generation != streamGeneration) return;
-            hud.setText(text);
+            if (text != null) hud.setText(text);
             if (phase == HomeView.PHASE_ERROR || phase == HomeView.PHASE_CONNECTING) releaseDeckInput();
             // Home is behind the deck while streaming; repainting it four times a
             // second would be wasted work, so only phase changes get through.
@@ -2287,6 +2556,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     lastMobile = mobile;
                     H264Stream s = stream;
                     if (s != null) s.sendNetwork(mobile);
+                    // Wi-Fi just took over: look for home now, not on the next
+                    // 15 s tick (which skipped while mobile data was active).
+                    if (!mobile) runOnUiThread(() -> {
+                        if (root == null || route != Endpoints.AWAY) return;
+                        root.removeCallbacks(homeCheck);
+                        homeCheck.run();
+                    });
                 }
             };
 }

@@ -287,6 +287,8 @@ final class Ui {
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp);
         t.setTypeface(FONT);
         t.setLineSpacing(dp(c, 3), 1f);
+        // No single word left alone on a last line.
+        t.setBreakStrategy(android.graphics.text.LineBreaker.BREAK_STRATEGY_BALANCED);
         return t;
     }
 
@@ -294,6 +296,7 @@ final class Ui {
     static TextView sectionLabel(Context c, String content) {
         TextView t = text(c, content, T_LABEL, TEXT_FAINT);
         t.setTypeface(FONT_BOLD);
+        t.setLetterSpacing(0.06f);
         t.setAccessibilityHeading(true);
         t.setPadding(dp(c, 4), dp(c, 20), 0, dp(c, 8));
         return t;
@@ -419,6 +422,7 @@ final class Ui {
     static TextView menuSection(Context c, String text) {
         TextView h = text(c, text, T_LABEL, TEXT_FAINT);
         h.setTypeface(FONT_BOLD);
+        h.setLetterSpacing(0.06f);
         h.setAccessibilityHeading(true);
         h.setPadding(dp(c, 16), dp(c, 18), dp(c, 16), dp(c, 8));
         return h;

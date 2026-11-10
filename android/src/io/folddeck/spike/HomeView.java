@@ -122,6 +122,8 @@ class HomeView extends FrameLayout {
         setState(PHASE_IDLE, null);
     }
 
+    View mainRow() { return main; }
+
     /** One Omarchy menu row: large icon, mono label, chevron. Child 1 is the label stack. */
     private LinearLayout row(String icon, String label, Runnable onClick) {
         LinearLayout r = new LinearLayout(c);

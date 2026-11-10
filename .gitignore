@@ -23,3 +23,7 @@ android/debug.keystore
 server.key
 server.crt
 authorized_clients
+
+# Smart-keyboard word lists: third-party data, fetched by android/fetch_words.py.
+android/assets/words.txt
+android/assets/next.txt

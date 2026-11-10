@@ -57,6 +57,8 @@ class KeyboardView extends View {
 
     /** One finger's press: which key, and which code we actually put on the wire. */
     private static final class Press {
+        /** Where the finger may wander before it has slid off: wider than the cap when the tap was re-aimed. */
+        RectF zone;
         Cap cap;
         int sentCode;
         boolean isNub;
@@ -85,6 +87,42 @@ class KeyboardView extends View {
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     private KeyListener listener;
+
+    /** A word tapped in the suggestion strip. */
+    interface SuggestionListener {
+        void onSuggestion(String word);
+    }
+
+    private SuggestionListener suggestionListener;
+    /** Lean edge taps towards likely letters; show the strip of words above the keys. */
+    private boolean smartTargets, strip;
+    private float[] letterWeights;
+    private String[] suggestions = new String[0];
+    private float stripHeight;
+    /** The middle of a key (this share of its half-size) is always that key. */
+    private static final float ANCHOR = 0.6f;
+
+    void setSuggestionListener(SuggestionListener l) {
+        suggestionListener = l;
+    }
+
+    void setSmart(boolean targets, boolean showStrip) {
+        smartTargets = targets;
+        if (showStrip == strip) return;
+        releaseAll();   // the keys are about to move down or up
+        strip = showStrip;
+        onSizeChanged(getWidth(), getHeight(), getWidth(), getHeight());
+        invalidate();
+    }
+
+    /** From the {@link Predictor}: per-letter likelihood (or null) and the words to offer. */
+    void setPrediction(float[] weights, String[] words) {
+        letterWeights = weights;
+        if (words == null) words = new String[0];
+        boolean changed = !java.util.Arrays.equals(words, suggestions);
+        suggestions = words;
+        if (changed && strip) invalidate();
+    }
     private TrackPointListener trackPoint;
 
     private float gap, rowHeight;
@@ -155,7 +193,8 @@ class KeyboardView extends View {
         gap = keyGap(w);
         Ev.Key[][] layout = showFnRow ? Ev.LAYOUT : WITHOUT_FN;
         int rows = layout.length;
-        rowHeight = (h - gap * (rows + 1)) / rows;
+        stripHeight = strip ? Math.min(34f * density, h * 0.14f) : 0f;
+        rowHeight = (h - stripHeight - gap * (rows + 1)) / rows;
         // Every row sums to ROW_UNITS, so one unit width serves all rows and the
         // columns line up the way they do on a real board.
         float unit = (w - gap * (Ev.ROW_UNITS + 1)) / Ev.ROW_UNITS;
@@ -168,7 +207,7 @@ class KeyboardView extends View {
             return;
         }
 
-        float y = gap;
+        float y = stripHeight + gap;
         for (Ev.Key[] row : layout) {
             float x = gap;
             for (Ev.Key key : row) {
@@ -224,7 +263,7 @@ class KeyboardView extends View {
         float unit = step - gap;
         for (int side = 0; side < 2; side++) {
             float origin = side == 0 ? 0 : w - (gap + maxUnits[1] * step);
-            float y = gap;
+            float y = stripHeight + gap;
             for (int r = 0; r < layout.length; r++) {
                 float[] widths = sides.get(side).get(r);
                 float sum = 0;
@@ -291,6 +330,15 @@ class KeyboardView extends View {
      * trackpad fills [left, right]. Wider than the nominal channel by the room
      * the emptier half gives up.
      */
+    /**
+     * How far one side of the channel moves per px the channel widens: the
+     * fuller half gives up exactly half, the emptier half less (see splitStep).
+     */
+    float splitShare(boolean right) {
+        cacheSplit();
+        return splitUnits[right ? 1 : 0] / (2f * Math.max(1f, Math.max(splitUnits[0], splitUnits[1])));
+    }
+
     float[] splitEdges(int w) {
         cacheSplit();
         float[] m = splitUnits;
@@ -323,6 +371,17 @@ class KeyboardView extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         canvas.drawColor(Ui.BG);
+        if (stripHeight > 0f && suggestions.length > 0) {
+            float cell = getWidth() / 3f, size = text.getTextSize();
+            text.setTextSize(Math.min(stripHeight * 0.48f, 16f * density));
+            text.setColor(Ui.TEXT);
+            float baseline = stripHeight / 2f - (text.ascent() + text.descent()) / 2f + gap / 2f;
+            for (int i = 0; i < suggestions.length && i < 3; i++) {
+                canvas.drawText(suggestions[i], cell * (i + 0.5f), baseline, text);
+                if (i > 0) canvas.drawLine(cell * i, stripHeight * 0.3f, cell * i, stripHeight * 0.8f, edge);
+            }
+            text.setTextSize(size);
+        }
         if (!android.animation.ValueAnimator.areAnimatorsEnabled()) bounce.clear();
         long now = SystemClock.uptimeMillis();
         for (Cap cap : caps) {
@@ -455,7 +514,7 @@ class KeyboardView extends View {
                         p.lastX = event.getX(i);
                         p.lastY = event.getY(i);
                         if (trackPoint != null) trackPoint.onTrackPoint(dx, dy);
-                    } else if (!p.cap.rect.contains(event.getX(i), event.getY(i))) {
+                    } else if (!(p.zone != null ? p.zone : p.cap.rect).contains(event.getX(i), event.getY(i))) {
                         // Sliding off a key cancels it rather than typing it.
                         release(id, false);
                     }
@@ -490,11 +549,26 @@ class KeyboardView extends View {
             return;
         }
 
-        Cap cap = capAt(x, y);
+        if (y < stripHeight) {
+            int i = (int) (x / Math.max(1f, getWidth() / 3f));
+            if (i >= 0 && i < suggestions.length && suggestionListener != null) {
+                if (haptics) performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                suggestionListener.onSuggestion(suggestions[i]);
+            }
+            return;
+        }
+
+        Cap touched = capAt(x, y);
+        Cap cap = aim(touched, x, y);
         if (cap == null) return;
 
         Press p = new Press();
         p.cap = cap;
+        if (cap != touched) {
+            p.zone = new RectF(cap.rect);
+            if (touched != null) p.zone.union(touched.rect);
+            p.zone.union(x, y);
+        }
         byPointer.put(pointerId, p);
         bounce.press(cap.key.code, SystemClock.uptimeMillis());
         if (haptics) performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
@@ -575,6 +649,40 @@ class KeyboardView extends View {
     private int state(int code) {
         Integer s = modState.get(code);
         return s == null ? MOD_OFF : s;
+    }
+
+    /**
+     * Key-target resizing, as phone keyboards do it: the caps stay put, but a
+     * tap near the edge of a letter goes to whichever neighbouring letter is
+     * the better bet, distance from its centre times how likely it comes next.
+     * The middle of every key is anchored, so any letter can always be typed,
+     * and nothing is re-aimed during a Ctrl/Alt/Super shortcut.
+     */
+    private Cap aim(Cap touched, float x, float y) {
+        float[] w = letterWeights;
+        if (!smartTargets || w == null) return touched;
+        if (touched != null && Predictor.letter(touched.key.code) < 0) return touched;
+        for (Map.Entry<Integer, Integer> e : modState.entrySet()) {
+            int code = e.getKey();
+            if (e.getValue() != MOD_OFF && code != Ev.LEFTSHIFT && code != Ev.RIGHTSHIFT) return touched;
+        }
+        Cap best = touched;
+        float bestScore = -1f;
+        for (Cap c : caps) {
+            int letter = Predictor.letter(c.key.code);
+            if (letter < 0) continue;
+            // In half-key units: 0 at the centre, 1 at the cap's edge.
+            float dx = (x - c.rect.centerX()) / (c.rect.width() / 2f);
+            float dy = (y - c.rect.centerY()) / (c.rect.height() / 2f);
+            if (Math.abs(dx) > 1.7f || Math.abs(dy) > 1.7f) continue;   // touching neighbours only
+            if (c == touched && Math.abs(dx) < ANCHOR && Math.abs(dy) < ANCHOR) return touched;
+            float score = (0.03f + w[letter]) * (float) Math.exp(-(dx * dx + dy * dy) / 1.28f);
+            if (score > bestScore) {
+                bestScore = score;
+                best = c;
+            }
+        }
+        return best;
     }
 
     private Cap capAt(float x, float y) {

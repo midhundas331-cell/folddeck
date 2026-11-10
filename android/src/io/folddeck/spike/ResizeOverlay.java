@@ -5,7 +5,6 @@ import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Canvas;
 import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.RectF;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
@@ -23,17 +22,21 @@ final class ResizeOverlay extends FrameLayout {
             HEIGHT = 4, WHEEL = 5, BUTTONS = 6;
     private static final String[] NAMES = {"Monitor", "Keyboard", "Trackpad", "Bar", "Pad height", "Wheel", "Buttons"};
 
-    private static final int MODE_NONE = 0, MODE_CORNER = 1, MODE_PAN_OR_SWAP = 2, MODE_FALLBACK_1D = 3;
+    private static final int MODE_NONE = 0, MODE_EDGE = 1, MODE_PAN_OR_SWAP = 2, MODE_FALLBACK_1D = 3;
 
     interface Listener {
         float value(int target);
         void change(int target, float fraction);
         boolean horizontal(int target);
         void beginResize();
-        /** Returns how far past the limits the finger is, in px along x and y. */
-        float[] resizeCorner(int target, int corner, float dxPx, float dyPx, float overlayW, float overlayH);
+        /** The dividers that can move in the layout on screen now. */
+        WorkspaceGeometry.Edge[] edges();
+        /** Moves {@code edge} {@code travelPx} along its axis from where the drag began. */
+        void resizeEdge(WorkspaceGeometry.Edge edge, float travelPx);
         /** Moves {@code from} into {@code to}'s place; false when that changes nothing. */
         boolean swap(int from, int to, float dropX, InputDeckLayout.Box toBox);
+        /** The bar, held over the monitor it sits beside, at {@code x}: move it to that half. */
+        boolean barSide(float x, InputDeckLayout.Box monitor);
         void reset();
         void finish(boolean save);
     }
@@ -42,11 +45,19 @@ final class ResizeOverlay extends FrameLayout {
     private final View[] targets;
     private final TextView[] tabs = new TextView[NAMES.length];
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Path bracketPath = new Path();
+    /** The dragged pane's glass sheen, on a unit square scaled to the pane. */
+    private final Paint sheen = new Paint();
+    {
+        sheen.setShader(new android.graphics.LinearGradient(0f, 0f, 1f, 1f,
+                new int[]{0x4DFFFFFF, 0x14FFFFFF, 0x00FFFFFF, 0x1FFFFFFF},
+                new float[]{0f, 0.35f, 0.6f, 1f}, android.graphics.Shader.TileMode.CLAMP));
+    }
     private final RectF box = new RectF();
     private final RectF animBox = new RectF();
     private final RectF tempBox = new RectF();
     private final RectF dragSourceRect = new RectF();
+    private final RectF[] badges = {new RectF(), new RectF(), new RectF(), new RectF(), new RectF(), new RectF()};
+    private int placed;
     private final int[] origin = new int[2], location = new int[2];
     private final SeekBar slider;
     private final TextView hint;
@@ -54,9 +65,15 @@ final class ResizeOverlay extends FrameLayout {
     private final int touchSlop;
     private int selected, pointer = -1;
     private int touchMode = MODE_NONE;
-    private int activeCorner = WorkspaceGeometry.CORNER_NONE;
+    /** The divider held, as it was when grabbed, and how far the finger has taken it. */
+    private WorkspaceGeometry.Edge activeEdge;
+    private float travel, lastActual, stretchPx;
     private int dragSource = -1, lastUnder = -1, ghostPane = -1;
     private boolean draggingSwap, swapped, landing;
+    private int gesture;
+
+    /** Counts pane drags, so a listener can tell one drag from the next. */
+    int gesture() { return gesture; }
     private boolean panelAtBottom;
     private float startX, startY, dragX, dragY, startValue;
 
@@ -67,8 +84,7 @@ final class ResizeOverlay extends FrameLayout {
     private final Spring lift = new Spring(Motion.SNAPPY[0], Motion.SNAPPY[1], 0.002f);
     private boolean framePlaced, moving;
     private long lastFrame;
-    /** Finger travel past the resize limits, px, and whether that has ticked yet. */
-    private float[] overshoot = new float[2];
+    /** Whether the finger is past where the layout stops, and that has ticked. */
     private boolean pastLimit;
 
     ResizeOverlay(Context c, View[] targets, Listener listener) {
@@ -201,15 +217,41 @@ final class ResizeOverlay extends FrameLayout {
         return Math.signum(over) * range * (1f - 1f / (Math.abs(over) * 0.55f / range + 1f));
     }
 
+    /** The held edge's side of the frame follows the stretch. */
     private void stretch(RectF r) {
-        float range = Ui.dp(getContext(), 44), min = Ui.dp(getContext(), 24);
-        float sx = rubber(overshoot[0], range), sy = rubber(overshoot[1], range);
-        boolean left = activeCorner == WorkspaceGeometry.CORNER_TL || activeCorner == WorkspaceGeometry.CORNER_BL;
-        boolean top = activeCorner == WorkspaceGeometry.CORNER_TL || activeCorner == WorkspaceGeometry.CORNER_TR;
-        if (left) r.left = Math.min(r.left + sx, r.right - min);
-        else r.right = Math.max(r.right + sx, r.left + min);
-        if (top) r.top = Math.min(r.top + sy, r.bottom - min);
-        else r.bottom = Math.max(r.bottom + sy, r.top + min);
+        if (activeEdge == null) return;
+        float min = Ui.dp(getContext(), 24);
+        switch (activeEdge.side) {
+            case WorkspaceGeometry.LEFT: r.left = Math.min(r.left + stretchPx, r.right - min); break;
+            case WorkspaceGeometry.RIGHT: r.right = Math.max(r.right + stretchPx, r.left + min); break;
+            case WorkspaceGeometry.TOP: r.top = Math.min(r.top + stretchPx, r.bottom - min); break;
+            default: r.bottom = Math.max(r.bottom + stretchPx, r.top + min); break;
+        }
+    }
+
+    /**
+     * Where the held edge is drawn: under the finger while the layout follows,
+     * then with growing resistance past the point where it truly stops. The
+     * difference is measured on the laid-out panes, never predicted.
+     */
+    private void track(WorkspaceGeometry.Edge[] edges) {
+        stretchPx = 0f;
+        if (touchMode != MODE_EDGE || activeEdge == null) return;
+        WorkspaceGeometry.Edge now = find(edges, activeEdge.id());
+        float actual = now != null ? now.pos : activeEdge.pos;
+        float over = activeEdge.pos + travel - actual;
+        stretchPx = rubber(over, Ui.dp(getContext(), 44));
+        // Only a stop counts: while the layout is still catching up a frame
+        // behind a fast finger, the edge is moving.
+        boolean past = Math.abs(over) > Ui.dp(getContext(), 16) && Math.abs(actual - lastActual) < 0.5f;
+        if (past && !pastLimit) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+        if (past || Math.abs(over) < Ui.dp(getContext(), 8)) pastLimit = past;
+        lastActual = actual;
+    }
+
+    private static WorkspaceGeometry.Edge find(WorkspaceGeometry.Edge[] edges, int id) {
+        for (WorkspaceGeometry.Edge e : edges) if (e.id() == id) return e;
+        return null;
     }
 
     private TextView action(Context c, String label, Runnable run) {
@@ -258,7 +300,7 @@ final class ResizeOverlay extends FrameLayout {
         // After a live swap, whatever now lies under the finger is where it already is.
         if (draggingSwap) lastUnder = WorkspaceGeometry.hitTarget(primaryBoxes(), dragX, dragY);
         hint.setText(tabs[selected].isEnabled()
-                ? "Grab any corner to resize · drag pane to swap · Done saves"
+                ? "Drag a divider to resize · drag a pane to swap · Done saves"
                 : "Enable this control in App settings to resize it");
         updatePanelDock();
         invalidate();
@@ -302,7 +344,6 @@ final class ResizeOverlay extends FrameLayout {
 
     @Override protected void onDraw(Canvas canvas) {
         Context c = getContext();
-        float radius = 0;   // Omarchy corners are square
         int primarySelected = selected >= HEIGHT ? TRACKPAD : selected;
         long now = System.nanoTime();
         // After a rest the first step is one frame, not the whole idle gap.
@@ -310,55 +351,53 @@ final class ResizeOverlay extends FrameLayout {
         lastFrame = now;
         boolean jump = !ValueAnimator.areAnimatorsEnabled();
         boolean animating = false;
+        WorkspaceGeometry.Edge[] edges = listener.edges();
+        track(edges);
+        placed = 0;
 
-        // 1. Draw subtle outlines, corner ticks, and labels for unselected primary panes.
+        // 1. The other panes: a hairline and their name, nothing to grab.
         for (int i = 0; i < 4; i++) {
             if (i == primarySelected || !computeTargetRect(i, tempBox)) continue;
             paint.setColor(Ui.mix(Ui.LINE, Ui.ACCENT, 0.45f));
             paint.setStyle(Paint.Style.FILL);
             paint.setAlpha(10);
-            canvas.drawRoundRect(tempBox, radius, radius, paint);
-
+            canvas.drawRect(tempBox, paint);
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(Ui.dp(c, 1f));
             paint.setAlpha(110);
-            canvas.drawRoundRect(tempBox, radius, radius, paint);
-
-            drawCornerBrackets(canvas, tempBox, Ui.dp(c, 11), Ui.dp(c, 2f),
-                    130, WorkspaceGeometry.CORNER_NONE, false);
+            canvas.drawRect(tempBox, paint);
             drawBadge(canvas, tempBox, NAMES[i], false);
         }
 
         // 2. The selected pane: a frame on springs, so it glides between panes,
-        //    stretches elastically past a limit and settles back on release.
+        //    stretches with a held edge past its limit and settles back on release.
         if (tabs[selected].isEnabled() && computeTargetRect(selected, box)) {
-            boolean cornering = touchMode == MODE_CORNER;
-            if (cornering) stretch(box);
-            animating |= spring(frame, box, animBox, cornering ? TRACK : Motion.SNAPPY, dt,
+            boolean holding = touchMode == MODE_EDGE;
+            if (holding) stretch(box);
+            animating |= spring(frame, box, animBox, holding ? TRACK : Motion.SNAPPY, dt,
                     jump || !framePlaced);
             framePlaced = true;
-
             paint.setColor(Ui.ACCENT);
-            paint.setAlpha(cornering ? 28 : 16);
+            paint.setAlpha(holding ? 28 : 16);
             paint.setStyle(Paint.Style.FILL);
-            canvas.drawRoundRect(animBox, radius, radius, paint);
-
+            canvas.drawRect(animBox, paint);
             paint.setAlpha(220);
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(Ui.dp(c, 1.75f));
-            canvas.drawRoundRect(animBox, radius, radius, paint);
-
-            drawCornerBrackets(canvas, animBox, Ui.dp(c, 20), Ui.dp(c, 3.5f),
-                    255, cornering ? activeCorner : WorkspaceGeometry.CORNER_NONE, true);
-
-            String label = NAMES[selected] + (selected < HEIGHT ? " · ⤡ corners / ⇄ drag"
-                    : (listener.horizontal(selected) ? " ↔" : " ↕"));
-            drawBadge(canvas, animBox, label, true);
+            canvas.drawRect(animBox, paint);
+            drawBadge(canvas, animBox, NAMES[selected], true);
         } else {
             framePlaced = false;
         }
 
-        // 3. The dragged pane, lifted under the finger; on release it lands in its slot.
+        // 3. A grip on every divider that can move; the held one lights its whole line.
+        for (WorkspaceGeometry.Edge e : edges) {
+            boolean held = touchMode == MODE_EDGE && activeEdge != null && e.id() == activeEdge.id();
+            boolean mine = e.target == selected || e.target == HEIGHT && selected >= HEIGHT;
+            drawGrip(canvas, e, held ? stretchPx : 0f, held, mine);
+        }
+
+        // 4. The dragged pane, lifted under the finger; on release it lands in its slot.
         if (ghostPane >= 0) {
             if (draggingSwap) {
                 tempBox.set(dragSourceRect);
@@ -374,15 +413,32 @@ final class ResizeOverlay extends FrameLayout {
             animating |= spring(ghost, tempBox, tempBox, draggingSwap ? TRACK : Motion.SNAPPY, dt,
                     jump || !landing && !draggingSwap);
 
-            paint.setColor(Ui.SURFACE_HI);
-            paint.setAlpha(Math.round(185 * Math.min(1f, up)));
+            // Glass: a see-through tinted pane with a soft shadow, a diagonal
+            // sheen and a bright rim, so the layout stays visible beneath it.
+            float a = Math.min(1f, up);
             paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Ui.SURFACE_HI);
+            paint.setAlpha(Math.round(95 * a));
+            paint.setShadowLayer(Ui.dp(c, 22) * a, 0f, Ui.dp(c, 10) * a, Math.round(110 * a) << 24);
             canvas.drawRect(tempBox, paint);
-            paint.setColor(Ui.ACCENT);
-            paint.setAlpha(Math.round(245 * Math.min(1f, up)));
+            paint.clearShadowLayer();
+            canvas.save();
+            canvas.translate(tempBox.left, tempBox.top);
+            canvas.scale(tempBox.width(), tempBox.height());
+            sheen.setAlpha(Math.round(255 * a));
+            canvas.drawRect(0f, 0f, 1f, 1f, sheen);
+            canvas.restore();
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(Ui.dp(c, 2.2f));
+            paint.setColor(Ui.ACCENT);
+            paint.setAlpha(Math.round(200 * a));
+            paint.setStrokeWidth(Ui.dp(c, 1.5f));
             canvas.drawRect(tempBox, paint);
+            float rim = Ui.dp(c, 1.5f);
+            paint.setColor(0xFFFFFFFF);
+            paint.setAlpha(Math.round(120 * a));
+            paint.setStrokeWidth(Ui.dp(c, 1f));
+            canvas.drawLine(tempBox.left + rim, tempBox.top + rim, tempBox.right - rim, tempBox.top + rim, paint);
+            canvas.drawLine(tempBox.left + rim, tempBox.top + rim, tempBox.left + rim, tempBox.bottom - rim, paint);
             if (draggingSwap) drawBadge(canvas, tempBox, "⇄ " + NAMES[ghostPane], true);
             if (!draggingSwap && lift.value <= 0.002f) {
                 landing = false;
@@ -399,60 +455,35 @@ final class ResizeOverlay extends FrameLayout {
         if (animating) postInvalidateOnAnimation();
     }
 
-    private void drawCornerBrackets(Canvas canvas, RectF r, float arm, float stroke,
-                                    int alpha, int highlightedCorner, boolean nodes) {
+    /**
+     * A short solid bar across the middle of the divider, ringed in the ground
+     * colour so it reads on any pane. Held, it grows and the whole line shows.
+     */
+    private void drawGrip(Canvas canvas, WorkspaceGeometry.Edge e, float offset, boolean held, boolean mine) {
         Context c = getContext();
-        float ax = Math.min(arm, r.width() * 0.32f);
-        float ay = Math.min(arm, r.height() * 0.32f);
-        float cr = 0;   // square brackets, as Omarchy
-
-        paint.setStyle(Paint.Style.STROKE);
-        paint.setStrokeCap(Paint.Cap.SQUARE);
-        paint.setStrokeJoin(Paint.Join.MITER);
-
-        float[] xs = {r.left, r.right, r.left, r.right};
-        float[] ys = {r.top, r.top, r.bottom, r.bottom};
-        float[] sx = {1f, -1f, 1f, -1f};
-        float[] sy = {1f, 1f, -1f, -1f};
-
-        for (int i = 0; i < 4; i++) {
-            boolean active = i == highlightedCorner;
-            float x = xs[i], y = ys[i];
-            float dx = sx[i] * ax, dy = sy[i] * ay;
-            float rx = sx[i] * cr, ry = sy[i] * cr;
-
-            if (active) {
-                paint.setStyle(Paint.Style.FILL);
-                paint.setColor(Ui.ACCENT);
-                paint.setAlpha(64);
-                float halo = Ui.dp(c, 20);
-                canvas.drawRect(x - halo, y - halo, x + halo, y + halo, paint);
-            }
-
-            paint.setStyle(Paint.Style.STROKE);
+        float across = e.pos + e.nudge + offset, mid = (e.from + e.to) * 0.5f;
+        float span = Math.max(0f, e.to - e.from);
+        float half = Math.min(Ui.dp(c, held ? 26 : 20), span * 0.3f);
+        float thick = Ui.dp(c, held ? 3.5f : 2.5f), ring = Ui.dp(c, 2);
+        boolean v = e.vertical();
+        if (held) {
+            paint.setStyle(Paint.Style.FILL);
             paint.setColor(Ui.ACCENT);
-            paint.setAlpha(alpha);
-            paint.setStrokeWidth(active ? stroke * 1.35f : stroke);
-
-            bracketPath.reset();
-            bracketPath.moveTo(x, y + dy);
-            bracketPath.lineTo(x, y + ry);
-            bracketPath.quadTo(x, y, x + rx, y);
-            bracketPath.lineTo(x + dx, y);
-            canvas.drawPath(bracketPath, paint);
-
-            if (nodes) {
-                float nodeR = Ui.dp(c, active ? 7.5f : 5.5f);
-                paint.setStyle(Paint.Style.FILL);
-                paint.setColor(Ui.ACCENT);
-                paint.setAlpha(alpha);
-                canvas.drawRect(x - nodeR, y - nodeR, x + nodeR, y + nodeR, paint);
-                float dot = nodeR * 0.42f;
-                paint.setColor(Ui.onAccent());
-                paint.setAlpha(alpha);
-                canvas.drawRect(x - dot, y - dot, x + dot, y + dot, paint);
-            }
+            paint.setAlpha(170);
+            float line = Ui.dp(c, 1);
+            if (v) canvas.drawRect(across - line, e.from, across + line, e.to, paint);
+            else canvas.drawRect(e.from, across - line, e.to, across + line, paint);
         }
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(Ui.BG);
+        paint.setAlpha(230);
+        float a = thick + ring, b = half + ring;
+        if (v) canvas.drawRect(across - a, mid - b, across + a, mid + b, paint);
+        else canvas.drawRect(mid - b, across - a, mid + b, across + a, paint);
+        paint.setColor(Ui.ACCENT);
+        paint.setAlpha(held || mine ? 255 : 150);
+        if (v) canvas.drawRect(across - thick, mid - half, across + thick, mid + half, paint);
+        else canvas.drawRect(mid - half, across - thick, mid + half, across + thick, paint);
     }
 
     private void drawBadge(Canvas canvas, RectF r, String text, boolean accent) {
@@ -475,6 +506,15 @@ final class ResizeOverlay extends FrameLayout {
             }
         }
         cy = Motion.clamp(cy, halfH + Ui.dp(c, 4), getHeight() - halfH - Ui.dp(c, 4));
+        // A pane nested in another (the split pad in the keys) would put two
+        // names on one spot: step down past any already drawn.
+        for (int i = 0; i < placed; i++) {
+            RectF o = badges[i];
+            if (cx - halfW < o.right && cx + halfW > o.left && cy - halfH < o.bottom && cy + halfH > o.top) {
+                cy = o.bottom + halfH + Ui.dp(c, 4);
+            }
+        }
+        if (placed < badges.length) badges[placed++].set(cx - halfW, cy - halfH, cx + halfW, cy + halfH);
 
         paint.setStyle(Paint.Style.FILL);
         paint.setColor(accent ? Ui.ACCENT : Ui.SURFACE_HI);
@@ -503,22 +543,21 @@ final class ResizeOverlay extends FrameLayout {
                 pointer = e.getPointerId(0);
                 startX = dragX = e.getX();
                 startY = dragY = e.getY();
-                activeCorner = WorkspaceGeometry.CORNER_NONE;
+                activeEdge = null;
+                travel = 0f;
                 dragSource = -1;
                 draggingSwap = false;
                 swapped = false;
-                overshoot = new float[2];
                 pastLimit = false;
 
                 InputDeckLayout.Box[] boxes = primaryBoxes();
-                int hitCorner = WorkspaceGeometry.hitCorner(boxes, selected, startX, startY,
-                        Ui.dp(c, 38), Ui.dp(c, 20));
-                if (hitCorner >= 0) {
-                    int target = hitCorner >> 4;
-                    int corner = hitCorner & 0xF;
-                    if (selected != target) selectTarget(target);
-                    touchMode = MODE_CORNER;
-                    activeCorner = corner;
+                WorkspaceGeometry.Edge[] edges = listener.edges();
+                int hit = WorkspaceGeometry.hitEdge(edges, startX, startY, Ui.dp(c, 24));
+                if (hit >= 0) {
+                    activeEdge = edges[hit];
+                    lastActual = activeEdge.pos;
+                    if (selected != activeEdge.target) selectTarget(activeEdge.target);
+                    touchMode = MODE_EDGE;
                     listener.beginResize();
                     performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
                     startValue = listener.value(selected);
@@ -550,12 +589,9 @@ final class ResizeOverlay extends FrameLayout {
                 dragX = x;
                 dragY = y;
 
-                if (touchMode == MODE_CORNER) {
-                    overshoot = listener.resizeCorner(selected, activeCorner,
-                            x - startX, y - startY, getWidth(), getHeight());
-                    boolean past = Math.max(Math.abs(overshoot[0]), Math.abs(overshoot[1])) > Ui.dp(c, 16);
-                    if (past && !pastLimit) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
-                    pastLimit = past;
+                if (touchMode == MODE_EDGE) {
+                    travel = activeEdge.vertical() ? x - startX : y - startY;
+                    listener.resizeEdge(activeEdge, travel);
                     slider.setProgress(Math.round(listener.value(selected) * 1000));
                     invalidate();
                     return true;
@@ -564,6 +600,7 @@ final class ResizeOverlay extends FrameLayout {
                 if (touchMode == MODE_PAN_OR_SWAP) {
                     if (!draggingSwap && Math.hypot(x - startX, y - startY) > touchSlop) {
                         draggingSwap = true;
+                        gesture++;
                         ghostPane = dragSource;
                         landing = false;
                         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
@@ -580,6 +617,10 @@ final class ResizeOverlay extends FrameLayout {
                                 swapped = true;
                                 performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
                             }
+                        } else if (dragSource == BAR && under == MONITOR
+                                && listener.barSide(x, boxes[under])) {
+                            swapped = true;
+                            performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
                         }
                         invalidate();
                     }
@@ -610,10 +651,10 @@ final class ResizeOverlay extends FrameLayout {
                     }
                 }
                 landing = draggingSwap;
-                overshoot = new float[2];   // the frame springs back from any stretch
                 pointer = -1;
-                touchMode = MODE_NONE;
-                activeCorner = WorkspaceGeometry.CORNER_NONE;
+                touchMode = MODE_NONE;   // the frame springs back from any stretch
+                activeEdge = null;
+                travel = 0f;
                 dragSource = -1;
                 draggingSwap = false;
                 performClick();
